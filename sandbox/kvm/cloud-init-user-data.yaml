@@ -1,0 +1,46 @@
+#cloud-config
+# One-time provisioning for the bobbypin analysis guest. Used by provision-guest.sh.
+# Deliberately clean: no user data, no credentials, no host identity.
+hostname: bp-analyst
+manage_etc_hosts: true
+users:
+  - name: analyst
+    gecos: Analysis Guest
+    groups: [sudo]
+    sudo: ALL=(ALL) NOPASSWD:ALL
+    shell: /bin/bash
+    lock_passwd: false
+    plain_text_passwd: analyst-7k3mq9
+ssh_pwauth: false
+disable_root: true
+package_update: true
+packages:
+  - qemu-guest-agent     # how the backend drives the guest
+  - wine                 # so PE targets can actually be executed in the boundary
+  - wine64
+  - netcat-openbsd
+  - python3
+  - xvfb
+  - xauth
+  - file
+  - curl
+write_files:
+  - path: /etc/bp-analysis-guest
+    owner: root:root
+    permissions: '0644'
+    content: |
+      bobbypin analysis guest.
+      Throwaway. Nothing here survives a run: the disk is a qcow2 overlay that is
+      deleted when the VM exits, and the base image is only ever opened read-only.
+runcmd:
+  # 32-bit PE support. Most licence-guarded Windows targets are still win32, and
+  # without wine32 the guest can only run 64-bit ones - which is most of the point.
+  - dpkg --add-architecture i386
+  - apt-get update
+  - sh -c 'DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends wine32 || echo "wine32 unavailable - win32 targets cannot run in this guest"'
+  - systemctl enable --now qemu-guest-agent
+  - systemctl enable --now serial-getty@ttyS0
+  - mkdir -p /var/lib/bp
+  - echo done > /var/lib/bp/provisioned
+  # deferred so cloud-init can finish its own bookkeeping first
+  - sh -c 'nohup sh -c "sleep 15; systemctl poweroff" >/dev/null 2>&1 &'

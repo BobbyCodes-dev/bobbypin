@@ -1,0 +1,13 @@
+; Import definitions for the ntdll.dll functions the fixtures call directly.
+;
+; mingw-w64 ships libntdll.a, but it does not export these for import, so `__declspec(dllimport)`
+; fails to link. dlltool turns this list into an import library that produces real IAT entries -
+; which is exactly what the patcher needs to see (a `call [rip+disp]` to an import slot rather
+; than an indirect call through a GetProcAddress result).
+;
+;   x86_64-w64-mingw32-dlltool -d ntdll.def -l libntdll_imp.a -k
+LIBRARY ntdll.dll
+EXPORTS
+NtQueryInformationProcess
+NtRaiseHardError
+RtlSetProcessIsCritical

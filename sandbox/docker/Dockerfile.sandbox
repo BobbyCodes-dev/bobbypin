@@ -1,0 +1,56 @@
+# bobbypin isolated analysis image.
+#
+#   docker build -f sandbox/docker/Dockerfile.sandbox -t bobbypin/sandbox:latest .
+#
+# Why wine: a Windows PE target cannot be executed on Linux without it, and the
+# point of this image is to execute the target INSIDE the boundary instead of on
+# the operator's workstation. Wine runs the target as an ordinary unprivileged
+# process in a container with no network, a read-only root filesystem and no
+# capabilities - so a crashing or badly written target costs one container.
+#
+# It is not a kernel boundary. If the target is actively hostile (or ships a
+# Windows driver), use the KVM backend instead - see sandbox/kvm/README.md.
+
+FROM debian:bookworm-slim
+
+ENV DEBIAN_FRONTEND=noninteractive \
+    WINEPREFIX=/scratch/.wine \
+    HOME=/scratch \
+    WINEDEBUG=-all
+
+RUN apt-get update \
+ && apt-get install -y --no-install-recommends \
+      ca-certificates \
+      python3 \
+      python3-pip \
+      file \
+      binutils \
+      procps \
+      netcat-openbsd \
+      xvfb \
+      xauth \
+      wine \
+      wine64 \
+ && rm -rf /var/lib/apt/lists/*
+
+# 32-bit PE support (many licence-checking targets are still win32). Best
+# effort: wine32 pulls the i386 archive and is not available on every mirror.
+RUN dpkg --add-architecture i386 \
+ && apt-get update \
+ && (apt-get install -y --no-install-recommends wine32 || echo "wine32 unavailable - 32-bit PE targets cannot be executed in this image") \
+ && rm -rf /var/lib/apt/lists/*
+
+RUN pip3 install --no-cache-dir --break-system-packages capstone \
+ || pip3 install --no-cache-dir capstone
+
+# match the sandbox's --user 1000:1000
+RUN useradd --uid 1000 --create-home --shell /bin/bash analyst \
+ && mkdir -p /scratch && chmod 1777 /scratch
+
+WORKDIR /home/analyst
+USER 1000:1000
+
+# The sandbox mounts the target read-only at /in, honeypots read-only at
+# /honeypots, and gives a writable /out + /scratch. Nothing needs to run at
+# start: the backend boots a keepalive shell and drives work with docker exec.
+CMD ["sleep", "infinity"]
