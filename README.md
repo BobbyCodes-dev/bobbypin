@@ -4,6 +4,10 @@
 
 <h1 align="center">bobbypin</h1>
 
+<p align="center">
+  <a href="https://bobbypin.bobbycodes.dev/count.json" title="every clone and every download, live"><img src="https://bobbypin.bobbycodes.dev/badge.svg" alt="downloads"></a>
+</p>
+
 <p align="center"><b>A reverse-engineering tool that cracks apps: it defeats licence checks, unlocks password and login gates, and patches the "invalid key" branch out of a binary.</b></p>
 
 bobbypin takes a compiled app you have no source for and gets you inside it. It
@@ -39,6 +43,16 @@ it.
 Four steps from clone to a proven patch. Run everything from the repo root.
 
 ### 1. Install
+
+Clone it, or grab the zip:
+
+```
+git clone https://github.com/BobbyCodes-dev/bobbypin.git
+```
+
+```
+https://bobbypin.bobbycodes.dev/dl/bcd        # zip, counts the download
+```
 
 ```bash
 python3 setup.py            # packages, sandbox image, VM, config, then a containment probe
