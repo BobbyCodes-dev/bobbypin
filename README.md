@@ -40,11 +40,27 @@ it.
 
 ## Instructions
 
+**In a hurry: [`START-HERE.md`](START-HERE.md)** is the one-page version — install,
+first three commands, where the AI instructions live. This section is the same
+path with the reasoning kept in.
+
 Four steps from clone to a proven patch. Run everything from the repo root.
 
 ### 1. Install
 
-Clone it, or grab the zip:
+One command:
+
+```bash
+./install.sh               # = python3 setup.py, with the repo as the working directory
+./install.sh --check       # what is missing, changes nothing
+```
+
+It installs the Python pieces, builds the sandbox image, provisions the KVM
+guest, installs the **pinpoint** analysis layer, writes the env file every entry
+point reads, and finishes with a containment probe. Skip any part you do not
+want (`--no-vm`, `--no-docker`, `--no-pinpoint`); nothing is mandatory.
+
+Two ways to get the tree:
 
 ```
 git clone https://github.com/BobbyCodes-dev/bobbypin.git
@@ -54,9 +70,15 @@ git clone https://github.com/BobbyCodes-dev/bobbypin.git
 https://bobbypin.bobbycodes.dev/dl/bcd        # zip, counts the download
 ```
 
+Or take the bundle, which carries the analysis layer inside it so the install
+needs no registry lookup at all:
+
+```
+https://github.com/BobbyCodes-dev/bobbypin/releases/download/bobbypin-bundle-v1.0.0/bobbypin-bundle-v1.0.0.tar.gz
+```
+
 ```bash
-python3 setup.py            # packages, sandbox image, VM, config, then a containment probe
-python3 setup.py --check    # what is missing, changes nothing
+tar -xzf bobbypin-bundle-v1.0.0.tar.gz && cd bobbypin && ./install.sh
 ```
 
 `setup.py` walks the whole prerequisite chain — Python packages, the container
