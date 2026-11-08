@@ -23,7 +23,10 @@ What it does, in order:
   5. provisions the KVM guest (downloads a Debian cloud image, ~330 MB, and runs a
      one-time unattended install) - this is the strongest isolation boundary
   6. writes `~/.bobbypin/sandbox.json` and points `kvm.base_image` at the guest
-  7. runs a containment probe so you know the boundary actually works
+  7. installs the pinpoint analysis layer (the npm CLI that adds Ghidra/
+     jadx/apktool backed decompilation) and writes the env file every
+     entry point reads, then reports which deep providers are live
+  8. runs a containment probe so you know the boundary actually works
 
 Nothing here touches the network except the package installs, the docker build and
 the guest image download. Re-running it is safe: every step is skipped when it is
@@ -43,6 +46,13 @@ REPO = os.path.dirname(os.path.abspath(__file__))
 VENV_DIR = os.path.join(REPO, ".venv")
 DOCKER_IMAGE = "bobbypin/sandbox:latest"
 DEFAULT_VM_DIR = os.path.join(os.path.expanduser("~"), "bobbypin-vm")
+PINPOINT_RELEASE = (
+    "https://github.com/BobbyCodes-dev/bobbypin/releases/download"
+    "/bobbypin-pinpoint-v1.0.0/bobbypin-pinpoint-1.0.0.tgz"
+)
+PINPOINT_PREFIX = os.path.join(os.path.expanduser("~"), "tools", "pinpoint-prefix")
+PINPOINT_ENV = os.path.join(os.path.expanduser("~"), ".config", "pinpoint-env.sh")
+PINPOINT_MARKER = "# >>> bobbypin setup: pinpoint analysis layer >>>"
 
 # ANSI only when a human is watching
 _TTY = sys.stdout.isatty() and os.environ.get("NO_COLOR") is None
@@ -447,17 +457,205 @@ def verify(args, python: str) -> bool:
 
 # --------------------------------------------------------------------------- #
 
+def _node_major() -> int | None:
+    exe = shutil.which("node")
+    if exe is None:
+        return None
+    try:
+        out = subprocess.run([exe, "-p", "process.versions.node.split('.')[0]"],
+                             capture_output=True, text=True, timeout=20)
+        return int(out.stdout.strip()) if out.returncode == 0 else None
+    except (OSError, ValueError, subprocess.SubprocessError):
+        return None
+
+
+def _pinpoint_version(pinpoint: str) -> str | None:
+    try:
+        out = subprocess.run([pinpoint, "--version"], capture_output=True, text=True, timeout=60)
+        return out.stdout.strip() if out.returncode == 0 else None
+    except (OSError, subprocess.SubprocessError):
+        return None
+
+
+def pinpoint_asset() -> str:
+    """Prefer the tarball shipped inside the bundle; fall back to the release asset."""
+    local = os.path.join(REPO, "vendor", "bobbypin-pinpoint-1.0.0.tgz")
+    if os.path.isfile(local):
+        return local
+    return PINPOINT_RELEASE
+
+
+def _find_ghidra() -> str | None:
+    import glob
+    candidates = []
+    for pattern in ("~/tools/ghidra_*", "/opt/ghidra_*", "/usr/share/ghidra*",
+                    "~/ghidra_*", "/opt/homebrew/opt/ghidra"):
+        candidates.extend(sorted(glob.glob(os.path.expanduser(pattern)), reverse=True))
+    for path in candidates:
+        if os.path.isfile(os.path.join(path, "support", "analyzeHeadless")):
+            return path
+    return None
+
+
+def _find_jdk21() -> str | None:
+    import glob
+    for pattern in ("~/tools/jdk-21*", "/usr/lib/jvm/*21*", "/opt/*jdk*21*"):
+        for path in sorted(glob.glob(os.path.expanduser(pattern)), reverse=True):
+            if os.path.isfile(os.path.join(path, "bin", "java")):
+                return path
+    return None
+
+
+def _find_jadx() -> str | None:
+    import glob
+    for pattern in ("~/tools/jadx-headless-mcp*.jar", "/opt/jadx*/jadx-headless-mcp*.jar"):
+        hits = sorted(glob.glob(os.path.expanduser(pattern)), reverse=True)
+        if hits:
+            return hits[0]
+    return None
+
+
+def write_pinpoint_env(prefix: str) -> None:
+    """Rewrite the managed block in ~/.config/pinpoint-env.sh; leave the rest alone."""
+    ghidra = _find_ghidra()
+    jdk = _find_jdk21()
+    jadx = _find_jadx()
+    apktool = shutil.which("apktool")
+    node_dir = os.path.dirname(shutil.which("node") or "")
+
+    body = [PINPOINT_MARKER,
+            "# written by bobbypin setup.py - re-run setup.py to refresh",
+            f'export PATH="{os.path.join(prefix, "bin")}:$PATH"']
+    if node_dir:
+        body.append(f'export PATH="{node_dir}:$PATH"')
+    if jdk:
+        body.append(f'export JAVA_HOME="{jdk}"')
+        body.append(f'export PATH="$JAVA_HOME/bin:$PATH"')
+    if ghidra:
+        body.append(f'export GHIDRA_INSTALL_DIR="{ghidra}"')
+    if jadx:
+        body.append(f'export PINPOINT_JADX_MCP_JAR="{jadx}"')
+    if apktool:
+        body.append(f'export PINPOINT_APKTOOL_COMMAND="{apktool}"')
+    for name, binary in (("PINPOINT_TSHARK_COMMAND", "tshark"),
+                         ("PINPOINT_CAPINFOS_COMMAND", "capinfos"),
+                         ("PINPOINT_GDB_COMMAND", "gdb")):
+        found = shutil.which(binary)
+        if found:
+            body.append(f'export {name}="{found}"')
+    body.append("# <<< bobbypin setup: pinpoint analysis layer <<<")
+
+    os.makedirs(os.path.dirname(PINPOINT_ENV), exist_ok=True)
+    existing = ""
+    if os.path.isfile(PINPOINT_ENV):
+        with open(PINPOINT_ENV, encoding="utf-8") as fh:
+            existing = fh.read()
+    start = existing.find(PINPOINT_MARKER)
+    end_marker = "# <<< bobbypin setup: pinpoint analysis layer <<<"
+    if start != -1 and end_marker in existing:
+        end = existing.find(end_marker, start) + len(end_marker)
+        updated = existing[:start] + "\n".join(body) + existing[end:]
+    else:
+        updated = existing.rstrip("\n") + ("\n\n" if existing.strip() else "") + "\n".join(body) + "\n"
+    with open(PINPOINT_ENV, "w", encoding="utf-8") as fh:
+        fh.write(updated)
+    ok(f"env file {PINPOINT_ENV}")
+
+
+def report_pinpoint_providers(pinpoint: str) -> list[str]:
+    try:
+        out = subprocess.run([pinpoint, "capabilities", "--json"],
+                             capture_output=True, text=True, timeout=180)
+        if out.returncode != 0:
+            return []
+        payload = json.loads(out.stdout)
+    except (OSError, ValueError, subprocess.SubprocessError):
+        return []
+    live = []
+    for candidate in payload.get("analysis_provider_candidates") or []:
+        availability = candidate.get("availability") or {}
+        if availability.get("status") == "available":
+            live.append(candidate["provider"]["id"])
+    return live
+
+
+def ensure_pinpoint(args) -> bool:
+    """Install the pinpoint analysis CLI and the env file that points it at engines."""
+    step("pinpoint analysis layer (deep decompilation for native, .NET, APK)")
+    if args.no_pinpoint:
+        info("skipped (--no-pinpoint)")
+        return False
+
+    existing = shutil.which("pinpoint")
+    if existing:
+        version = _pinpoint_version(existing)
+        if version:
+            ok(f"already installed: {existing} ({version})")
+            if args.check:
+                info("would refresh the env file and provider list")
+                return True
+            write_pinpoint_env(os.path.dirname(os.path.dirname(existing)))
+            live = report_pinpoint_providers(existing)
+            info(f"deep providers live: {', '.join(live) if live else 'none yet'}")
+            return True
+
+    major = _node_major()
+    if major is None:
+        warn("node is not installed - pinpoint is skipped, everything else still works")
+        info("to enable it later: install Node 22+ (https://nodejs.org), re-run setup.py")
+        return False
+    if major < 22:
+        warn(f"node {major} is too old for pinpoint (needs 22+) - skipped")
+        return False
+    ok(f"node {major}")
+
+    if not have("npm"):
+        warn("npm is missing - pinpoint skipped")
+        return False
+
+    if args.check:
+        info(f"would install {pinpoint_asset()} into {args.pinpoint_prefix}")
+        return False
+
+    step("installing pinpoint from the release asset")
+    result = run(["npm", "install", "-g", "--force", "--no-audit", "--no-fund",
+                  "--prefix", args.pinpoint_prefix, pinpoint_asset()], timeout=900)
+    if result.returncode != 0:
+        warn("pinpoint install failed - bobbypin still works without it")
+        info(pinpoint_asset())
+        return False
+
+    pinpoint = os.path.join(args.pinpoint_prefix, "bin", "pinpoint")
+    version = _pinpoint_version(pinpoint) if os.path.isfile(pinpoint) else None
+    if not version:
+        warn("pinpoint installed but did not run - check your node install")
+        return False
+    ok(f"pinpoint {version}")
+    write_pinpoint_env(args.pinpoint_prefix)
+    if not ghidra_hint():
+        info("no Ghidra found: analyze/decompile stay locked until you install it")
+    live = report_pinpoint_providers(pinpoint)
+    info(f"deep providers live: {', '.join(live) if live else 'none yet (provider-free probes work)'}")
+    return True
+
+
+def ghidra_hint() -> str | None:
+    import glob
+    return _find_ghidra()
+
+
 def banner() -> None:
     print(_c("1", "\nbobbypin setup"))
     print("  reverse-engineering suite for Windows binaries and Electron apps")
     print("  this installer prepares the analysis toolchain and the isolation backend\n")
 
 
-def summary(python, system, docker_ok, guest_ok) -> None:
+def summary(python, system, docker_ok, guest_ok, pinpoint_ok=False) -> None:
     step("Summary")
     info(f"interpreter   : {python or 'MISSING (capstone)'}")
     info(f"docker image  : {'ready' if docker_ok else 'not built'}")
     info(f"kvm guest     : {'ready' if guest_ok else 'not provisioned'}")
+    info(f"pinpoint      : {'ready (deep decompilation)' if pinpoint_ok else 'not installed'}")
     if not python:
         info("")
         info("Next: install capstone, then re-run this script.")
@@ -471,6 +669,8 @@ def summary(python, system, docker_ok, guest_ok) -> None:
         info("  python3 bobbypin_gui.py          # browser GUI on 127.0.0.1:8877")
         info("  python3 bobbypin.py target.exe   # CLI triage")
         info("  python3 bobbypin_ai.py plan target.exe   # JSON for agents")
+    info("")
+    info("Read START-HERE.md for the five-minute tour, AGENTS.md to drive it with an AI.")
     print()
 
 
@@ -488,6 +688,10 @@ def main(argv=None) -> int:
     ap.add_argument("--install-system-packages", action="store_true",
                     help="run the apt commands for missing system packages")
     ap.add_argument("--vm-dir", default=DEFAULT_VM_DIR, help="where the guest image lives")
+    ap.add_argument("--no-pinpoint", action="store_true",
+                    help="skip the pinpoint analysis layer (deep decompilation)")
+    ap.add_argument("--pinpoint-prefix", default=PINPOINT_PREFIX,
+                    help="npm prefix for the pinpoint CLI")
     args = ap.parse_args(argv)
 
     banner()
@@ -498,8 +702,9 @@ def main(argv=None) -> int:
     system = check_system(args)
     docker_ok = build_docker_image(args, system)
     guest_ok = provision_guest(args, system)
+    pinpoint_ok = ensure_pinpoint(args)
     verified = verify(args, python)
-    summary(python, system, docker_ok, guest_ok)
+    summary(python, system, docker_ok, guest_ok, pinpoint_ok)
 
     healthy = bool(python) and (docker_ok or guest_ok)
     if args.check:
