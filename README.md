@@ -421,6 +421,39 @@ Evidence for all of the above, with real command output, is in
 | ELF / Mach-O | triage, string hunting; manual disassembly playbook (objdump/otool/Ghidra) |
 | NSIS / Inno installers | payload extraction guidance (`7z`/`innoextract`) |
 
+### Beta: pinpoint — deep analysis for formats we cannot patch
+
+Some formats bobbypin can read but not reason about: .NET CIL, Android APKs,
+ELF/Mach-O internals, firmware. `pinpoint` turns those dead ends into evidence.
+
+| bobbypin kind | profile | what you get |
+|---|---|---|
+| `.NET` assembly | `managed` | managed metadata, member signatures, CIL anchors, `ldstr` strings |
+| `.apk` | `apk` | declared signing schemes and content digests |
+| ELF / Mach-O / unknown | `binary` | format, digests, sections, next probes |
+
+```bash
+python3 bobbypin_ai.py pinpoint_status                          # available? which providers?
+python3 bobbypin_ai.py pinpoint_analyze '{"path":"app.dll","profile":"managed"}'
+python3 bobbypin_ai.py triage app.dll                           # now carries a "pinpoint" block
+```
+
+Four rules hold it in place:
+
+- **Optional.** No analysis pack means `{"installed": false}` and one install hint.
+  Every existing command behaves exactly as before.
+- **Read-only.** Only probes on an allowlist in `pinpoint.py` are reachable.
+  Anything that launches a target (`capture-process`, `debug-with-gdb`) is
+  refused, because an untrusted binary only ever runs inside `sandbox_run`.
+- **Evidence, not instructions.** Nothing from an analysis report can choose a
+  patch offset. It tells a human where to look; bobbypin still decides what to flip.
+- **No duplicate advice.** Kinds bobbypin already works end to end (PE, ASAR, JAR,
+  PyInstaller) get no block at all.
+
+Deep native analysis additionally needs Ghidra, Hopper, IDA or Kuna. Without one,
+each profile still answers from the provider-free probe; `pinpoint_status` reports
+which providers are reachable. Disable the layer entirely with `PINPOINT_BIN=""`.
+
 ### Per-format workflow
 
 - **PE32 / PE32+** — the full loop: triage → candidate cards → disassembly →

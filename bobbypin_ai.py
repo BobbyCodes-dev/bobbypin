@@ -30,6 +30,14 @@ try:
 except Exception:  # pragma: no cover
     _antidebug_patch = None
 
+# optional deep-analysis layer (pinpoint). Imported defensively for the same reason
+# as the sandbox package: nothing in bobbypin may stop working because the optional
+# analysis pack is not installed.
+try:
+    import pinpoint as _pinpoint
+except Exception:  # pragma: no cover
+    _pinpoint = None
+
 try:
     from sandbox import runner as _sandbox_runner
     from sandbox import capabilities as _sandbox_caps
@@ -196,6 +204,11 @@ def cmd_help(_args):
     return {"ok": True, "cmd": "help", "data": {
         "commands": {
             "help": "{} -> command reference",
+            "pinpoint_status": '{} -> whether the optional deep-analysis layer is '
+                               'installed and which probes it can run',
+            "pinpoint_analyze": '{"path":"...","profile":"managed|apk|binary|auto"} -> '
+                                'read-only evidence for a target class bobbypin cannot '
+                                'patch (.NET, APK, ELF/Mach-O); never executes the target',
             "triage": '{"path": "..."} -> format, hashes, packers, warnings',
             "strings": '{"path":"...","filter":"word","limit":50} -> tagged string literals',
             "candidates": '{"path":"..."} -> verified patch candidates with indices',
@@ -308,7 +321,35 @@ def _upx_unpack(path, data):
     return None
 
 
+def _attach_pinpoint(rep, path):
+    """Add the pinpoint block when bobbypin cannot work this kind.
+
+    Never raises: triage feeds every downstream command, and an optional external
+    tool must not be able to break it.
+    """
+    if _pinpoint is None:
+        return rep
+    try:
+        kind = rep.get("kind")
+        if kind == "pe32" or kind == "pe32+":
+            if not rep.get("dotnet"):
+                return rep
+            kind = "dotnet"
+        block = _pinpoint.handoff(kind, path)
+        if block:
+            rep["pinpoint"] = block
+    except Exception as ex:  # pragma: no cover - defensive
+        rep["pinpoint"] = {"error": "pinpoint handoff failed: %s" % ex}
+    return rep
+
+
 def _triage(path):
+    """Every triage result passes through the pinpoint handoff, including the kinds
+    that return early, so each caller does not have to remember to attach it."""
+    return _attach_pinpoint(_triage_raw(path), path)
+
+
+def _triage_raw(path):
     data = open(path, "rb").read()
     rep = {}
     import hashlib
@@ -1397,8 +1438,47 @@ def cmd_telemetry(args):
 # Dispatch
 # ---------------------------------------------------------------------------
 
+def cmd_pinpoint_status(_args):
+    """Is the deep-analysis layer usable, and what can it answer? Cheap, never runs a target."""
+    if _pinpoint is None:
+        return _err("pinpoint_status", "pinpoint module is missing from this checkout")
+    probe = _pinpoint.available()
+    if not probe.get("installed"):
+        return {"ok": True, "cmd": "pinpoint_status",
+                "data": {"installed": False, "why": probe.get("why"),
+                         "note": "the analysis pack is optional; every other command works without it"}}
+    return {"ok": True, "cmd": "pinpoint_status",
+            "data": {"installed": True, "version": _pinpoint.version(),
+                     "profiles": _pinpoint.PROFILES,
+                     "handoff_kinds": sorted(_pinpoint.HANDOFF),
+                     "deep_providers": _pinpoint.providers(),
+                     "note": ("only read-only probes are reachable from here; anything "
+                              "that executes a target stays in sandbox_run")}}
+
+
+def cmd_pinpoint_analyze(args):
+    """Ask the deep-analysis layer for evidence about a target bobbypin cannot analyse itself."""
+    if _pinpoint is None:
+        return _err("pinpoint_analyze", "pinpoint module is missing from this checkout")
+    path = args.get("path")
+    if not path:
+        return _err("pinpoint_analyze", "need path")
+    if not os.path.isfile(os.path.expanduser(path)):
+        return _err("pinpoint_analyze", "no such file: %s" % path)
+    profile = args.get("profile") or "auto"
+    try:
+        return _pinpoint.analyze(path, profile,
+                                 timeout=int(args.get("timeout_s") or _pinpoint.DEFAULT_TIMEOUT_S))
+    except _pinpoint.PinpointError as ex:
+        return _err("pinpoint_analyze", str(ex))
+    except Exception as ex:  # never let an optional layer break the JSON contract
+        return _err("pinpoint_analyze", "%s: %s" % (type(ex).__name__, ex))
+
+
 COMMANDS = {
     "help":             cmd_help,
+    "pinpoint_status":  cmd_pinpoint_status,
+    "pinpoint_analyze": cmd_pinpoint_analyze,
     "triage":           cmd_triage,
     "strings":          cmd_strings,
     "candidates":       cmd_candidates,

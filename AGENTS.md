@@ -83,6 +83,28 @@ Human GUI (if the user prefers clicking): `python3 bobbypin_gui.py 8877`
 
 ---
 
+### pinpoint — deep analysis for formats we cannot patch (optional, beta)
+
+For target classes bobbypin can read but cannot reason about (.NET CIL, APK, ELF/
+Mach-O internals, unknown containers), triage attaches a `pinpoint` block and you
+may call the analysis layer directly. Analysis is evidence only: it never picks a
+patch offset.
+
+| cmd | required args | returns |
+|---|---|---|
+| `pinpoint_status` | — | whether the analysis pack is installed, which probes are reachable, which deep providers exist |
+| `pinpoint_analyze` | `path`, `profile`? (`managed`/`apk`/`binary`/`auto`) | one read-only probe as bobbypin JSON |
+
+Rules that are not negotiable:
+
+- Only probes on the allowlist in `pinpoint.py` are reachable. Anything that
+  executes the target stays out: an untrusted binary runs inside `sandbox_run` and
+  nowhere else.
+- If `triage` shows `pinpoint.installed: false`, do not pretend the analysis
+  happened — report the install hint.
+- `managed` / `apk` / `binary` work with no disassembler installed. Decompiling
+  native code (listed under `also_try`) needs Ghidra, Hopper, IDA or Kuna.
+
 ### Safety layer commands
 
 | cmd | required args | returns |
