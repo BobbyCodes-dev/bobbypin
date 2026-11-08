@@ -30,6 +30,7 @@ from __future__ import annotations
 import json
 import os
 import shutil
+import struct
 import subprocess
 import sys
 import time
@@ -78,6 +79,115 @@ def _dotnet_paths():
     return (os.path.join(root, "tools"), root)
 
 
+PYINST_MAGIC = b"MEI\x0c\x0b\x0a\x0b\x0e"
+
+
+# Python bytecode magic per minor version, needed because PyInstaller stores a
+# bare marshal blob: no .pyc header, so every decompiler rejects it as-is.
+_PYC_MAGIC = {
+    "39": 3425, "310": 3439, "311": 3495, "312": 3531, "313": 3571, "314": 3611,
+}
+
+
+def _pyc_header(pyver: int) -> bytes:
+    magic = _PYC_MAGIC.get(str(pyver), 3495)
+    # magic, flags(0), timestamp/hash (zeroed): enough for pycdc and friends
+    return magic.to_bytes(2, "little") + b"\r\n" + b"\x00" * 12
+
+
+def _pyinstaller_index(data):
+    """Return (pkg_start, entries, pyver) for a PyInstaller bundle.
+
+    Layout: [stub][package][cookie]. bobbypin's own parser reads the cookie as
+    little-endian u32 and stops there, so a current bundle comes back empty.
+    PyInstaller writes the fields big-endian, and the cookie grew a fixed
+    64-byte python-library name in 6.x, which moves the package start. The cookie
+    size is resolved by testing which candidate makes the first compressed entry
+    actually inflate, rather than guessing a version constant.
+    """
+    import zlib
+    idx = data.rfind(PYINST_MAGIC)
+    if idx == -1 or idx + 24 > len(data):
+        return None, [], None
+    try:
+        pkg_len, _toc_off, toc_len, pyver = struct.unpack_from("!IIII", data, idx + 8)
+    except struct.error:
+        return None, [], None
+    toc_start = idx - toc_len
+    if toc_start < 0:
+        return None, [], None
+
+    entries = []
+    pos = toc_start
+    while pos + 18 <= idx:
+        try:
+            entry_len, entry_pos, csize, usize = struct.unpack_from("!IIII", data, pos)
+        except struct.error:
+            break
+        if entry_len < 18 or pos + entry_len > len(data):
+            break
+        flag = data[pos + 16]
+        etype = chr(data[pos + 17])
+        name = data[pos + 18:pos + entry_len].rstrip(b"\x00").decode("latin-1")
+        entries.append([name, etype, flag, entry_pos, csize, usize])
+        pos += entry_len
+    if not entries:
+        return None, [], None
+
+    pkg_start = None
+    for cookie_size in (88, 24, 32, 40):
+        candidate = idx + cookie_size - pkg_len
+        if candidate < 0:
+            continue
+        probe = next((e for e in entries if e[2] and e[4] > 0), None)
+        if probe is None:
+            pkg_start = candidate
+            break
+        blob = data[candidate + probe[3]:candidate + probe[3] + probe[4]]
+        try:
+            if len(zlib.decompress(blob)) == probe[5]:
+                pkg_start = candidate
+                break
+        except zlib.error:
+            continue
+    if pkg_start is None:
+        pkg_start = idx + 24 - pkg_len
+    resolved = [(n, t, f, pkg_start + pos, cs, us) for n, t, f, pos, cs, us in entries]
+    return pkg_start, resolved, pyver
+
+
+def _unpack_pyinstaller(data, out_dir):
+    """Extract the payload; code entries get a .pyc header so they decompile."""
+    _start, entries, pyver = _pyinstaller_index(data)
+    if not entries:
+        return [], pyver
+    import zlib
+    written = []
+    header = _pyc_header(pyver or 311)
+    for name, etype, flag, off, csize, _usize in entries:
+        if etype in ("z", "o"):
+            continue
+        blob = data[off:off + csize]
+        if flag:
+            try:
+                blob = zlib.decompress(blob)
+            except zlib.error:
+                pass
+        safe = name.replace("\\", "/").lstrip("/")
+        if etype in ("s", "m", "M"):
+            # PyInstaller keeps the marshalled code object, with no file header
+            if not blob[:2] in (b"\x0d\x0d", b"\r\n") and not blob.startswith(header[:2]):
+                blob = header + blob
+            if not safe.endswith((".pyc", ".py")):
+                safe += ".pyc"
+        dest = os.path.join(out_dir, safe)
+        os.makedirs(os.path.dirname(dest) or out_dir, exist_ok=True)
+        with open(dest, "wb") as fh:
+            fh.write(blob)
+        written.append((safe, len(blob)))
+    return written, pyver
+
+
 def detect_kind(path: str) -> dict:
     """What is this file? Cheap, read-only, never raises for a real file."""
     with open(path, "rb") as fh:
@@ -93,17 +203,14 @@ def detect_kind(path: str) -> dict:
             out["machine"] = pe.get("machine")
         except (ValueError, OSError):
             pass
-        return out
 
-    if head[:4] == b"\x7fELF":
+    elif head[:4] == b"\x7fELF":
         out["kind"] = "elf"
-        return out
 
-    if head[:4] in MACHO_MAGICS:
+    elif head[:4] in MACHO_MAGICS:
         out["kind"] = "macho"
-        return out
 
-    if head[:4] == b"\x04\x00\x00\x00":
+    elif head[:4] == b"\x04\x00\x00\x00":
         try:
             with open(path, "rb") as fh:
                 if bp.parse_asar(fh.read()):
@@ -113,7 +220,7 @@ def detect_kind(path: str) -> dict:
         except (OSError, ValueError, IndexError):
             pass
 
-    if head[:4] == b"PK\x03\x04":
+    elif head[:4] == b"PK\x03\x04":
         try:
             with zipfile.ZipFile(path) as zf:
                 names = zf.namelist()
@@ -129,13 +236,20 @@ def detect_kind(path: str) -> dict:
         out["entries"] = len(names)
         return out
 
-    try:
-        with open(path, "rb") as fh:
-            if bp.pyinstaller_files(fh.read()):
+    # PyInstaller wraps a native stub, so it has to be checked after the format
+    # is known but before a native engine gets the file: the stub is a valid ELF
+    # or PE on its own, and decompiling it instead of unpacking the payload is a
+    # wrong answer, not a slow one.
+    if out["kind"] in ("pe", "elf", "macho", "unknown"):
+        try:
+            with open(path, "rb") as fh:
+                _start, entries, _pyver = _pyinstaller_index(fh.read())
+            if entries:
+                out["stub"] = out["kind"]
                 out["kind"] = "pyinstaller"
-                return out
-    except (OSError, ValueError):
-        pass
+                out["entries"] = len(entries)
+        except (OSError, ValueError, struct.error):
+            pass
     return out
 
 
@@ -314,11 +428,15 @@ def _recover_asar(path, out, kind_info, timeout) -> dict:
 def _recover_pyinstaller(path, out, kind_info, timeout) -> dict:
     with open(path, "rb") as fh:
         data = fh.read()
-    bp.unpack_pyinstaller(data, out)
+    written, pyver = _unpack_pyinstaller(data, out)
     tree = _count_tree(out)
     decompiler = _which("pycdc")
     decompiled = 0
-    notes = ["PyInstaller ships compiled .pyc bytecode, not source"]
+    py_label = f"{pyver // 100}.{pyver % 100:02d}" if pyver else None
+    notes = [f"PyInstaller bundle: {len(written)} payload file(s) extracted"
+             + (f", bytecode for Python {py_label}" if py_label else ""),
+             "the code entries are marshalled bytecode: a .pyc header is synthesised "
+             "so a decompiler will open them"]
     if decompiler:
         for dirpath, _dirs, names in os.walk(out):
             for name in names:
