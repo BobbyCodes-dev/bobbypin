@@ -105,6 +105,29 @@ Rules that are not negotiable:
 - `managed` / `apk` / `binary` work with no disassembler installed. Decompiling
   native code (listed under `also_try`) needs Ghidra, Hopper, IDA or Kuna.
 
+### pinpoint providers on this host
+
+The analysis pack reads its engines from the environment, and every entry point
+(shell, cron, systemd user unit, agent tool call) gets the same values from
+`~/.config/pinpoint-env.sh`, which `~/.bashrc`, `~/.profile` and
+`~/.config/environment.d/60-pinpoint.conf` all pull in.
+
+| setting | unlocks |
+|---|---|
+| `GHIDRA_INSTALL_DIR` + `JAVA_HOME` (JDK 21) | `analyze`, `decompile`, `function`, `inspect-binary-layout` on native code |
+| `PINPOINT_JADX_MCP_JAR` | `inspect-android-package`, `inspect-android-class`, `inspect-android-method` |
+| `PINPOINT_APKTOOL_COMMAND` | `decode-android-resources`, `decode-android-manifest` |
+| `PINPOINT_PWNTOOLS_PYTHON` | binary layout and recorded-crash replay |
+| `PINPOINT_TSHARK_COMMAND` / `PINPOINT_CAPINFOS_COMMAND` | capture analysis |
+| `PINPOINT_GDB_COMMAND` | GDB console sessions |
+| `PINPOINT_WABT_BIN_DIRECTORY` | WASM inspection |
+| `PINPOINT_ADB_PATH` | device capture |
+
+`pinpoint_status` and the `pinpoint` block report which of these are live under
+`deep_providers`, merging the provider-free probe groups with the engines
+themselves, so a configured Ghidra shows up as `ghidra` instead of "no
+decompiler configured".
+
 ### Safety layer commands
 
 | cmd | required args | returns |

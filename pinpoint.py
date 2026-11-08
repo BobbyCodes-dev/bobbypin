@@ -209,9 +209,12 @@ def _child_env(binary: str) -> dict:
 def providers(timeout: int = 60) -> dict:
     """Which deep providers the pack can actually reach on this host.
 
-    Native decompilation needs Ghidra, Hopper, IDA or Kuna. The provider-free
-    probes (artifact inventory, entropy, signatures, managed inventories) work
-    without any of them, which is why the default profiles use those.
+    Two different lists have to be merged. `capabilities` groups the probes that
+    need no external engine; `analysis_provider_candidates` reports the engines
+    themselves (Ghidra, Hopper, IDA, Kuna), which is where a configured Ghidra
+    shows up. Reading only the first list would tell an agent "no decompiler is
+    configured" on a host where decompilation works.
+
     Returns {} when capabilities cannot be read; callers treat that as unknown.
     """
     binary = find_cli()
@@ -232,6 +235,15 @@ def providers(timeout: int = 60) -> dict:
                 available_set.add(pid)
             else:
                 missing.add(pid)
+    # Deep analysis engines are reported separately, with their own availability.
+    for entry in data.get("analysis_provider_candidates") or []:
+        raw = ((entry.get("provider") or {}).get("id")) or "?"
+        pid = _provider_label(raw)
+        status = ((entry.get("availability") or {}).get("status")) or ""
+        if status == "available":
+            available_set.add(pid)
+        else:
+            missing.add(pid)
     return {"available": sorted(available_set), "unavailable": sorted(missing - available_set)}
 
 
