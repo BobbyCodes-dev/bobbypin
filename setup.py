@@ -618,11 +618,13 @@ def ensure_pinpoint(args) -> bool:
         return False
 
     step("installing pinpoint from the release asset")
-    result = run(["npm", "install", "-g", "--force", "--no-audit", "--no-fund",
-                  "--prefix", args.pinpoint_prefix, pinpoint_asset()], timeout=900)
-    if result.returncode != 0:
+    code, output = run(["npm", "install", "-g", "--force", "--no-audit", "--no-fund",
+                        "--prefix", args.pinpoint_prefix, pinpoint_asset()], timeout=900)
+    if code != 0:
         warn("pinpoint install failed - bobbypin still works without it")
-        info(pinpoint_asset())
+        for line in output.strip().splitlines()[-6:]:
+            info(line)
+        info(f"asset tried: {pinpoint_asset()}")
         return False
 
     pinpoint = os.path.join(args.pinpoint_prefix, "bin", "pinpoint")
@@ -650,19 +652,24 @@ def banner() -> None:
     print("  this installer prepares the analysis toolchain and the isolation backend\n")
 
 
-def summary(python, system, docker_ok, guest_ok, pinpoint_ok=False) -> None:
+def summary(python, system, docker_ok, guest_ok, pinpoint_ok=False, verified=False) -> None:
     step("Summary")
     info(f"interpreter   : {python or 'MISSING (capstone)'}")
-    info(f"docker image  : {'ready' if docker_ok else 'not built'}")
-    info(f"kvm guest     : {'ready' if guest_ok else 'not provisioned'}")
+    info(f"docker image  : {'ready' if docker_ok else 'not built (skipped or unavailable)'}")
+    info(f"kvm guest     : {'ready' if guest_ok else 'not provisioned (skipped or unavailable)'}")
     info(f"pinpoint      : {'ready (deep decompilation)' if pinpoint_ok else 'not installed'}")
     if not python:
         info("")
         info("Next: install capstone, then re-run this script.")
-    elif not (docker_ok or guest_ok):
+    elif not (docker_ok or guest_ok) and not verified:
         info("")
         info("Next: no isolation backend is ready. Static analysis (triage, strings,")
         info("      candidates, disasm, patch) works now; sandbox_run needs docker or KVM.")
+        info("      Re-run without --no-docker / --no-vm to provision one.")
+    elif not (docker_ok or guest_ok) and verified:
+        info("")
+        info("Isolation: a backend already present on this host passed the containment")
+        info("           probe; the builds were skipped by flag, which is fine.")
     else:
         info("")
         info("Next:")
@@ -704,7 +711,7 @@ def main(argv=None) -> int:
     guest_ok = provision_guest(args, system)
     pinpoint_ok = ensure_pinpoint(args)
     verified = verify(args, python)
-    summary(python, system, docker_ok, guest_ok, pinpoint_ok)
+    summary(python, system, docker_ok, guest_ok, pinpoint_ok, verified)
 
     healthy = bool(python) and (docker_ok or guest_ok)
     if args.check:
