@@ -12,7 +12,7 @@ export const BUNDLE_BASE_IMAGE = `node:${PACKAGE_METADATA.pinnedNodeVersion}-boo
 /** The port the agentenv framework maps for an MCP server env; it sets the host but not the port. */
 export const BUNDLE_MCP_PORT = 18765;
 /** Name of the packed CLI inside the env folder when a tarball is exported. */
-export const BUNDLE_TARBALL_NAME = "pinpoint-agents.tgz";
+export const BUNDLE_TARBALL_NAME = "bobbypin-pinpoint.tgz";
 /** Folder and env id rule: a kebab-case label the agentenv framework accepts as a local id. */
 const BUNDLE_NAME = /^[a-z0-9]+(?:-[a-z0-9]+)*$/u;
 const BUNDLE_NAME_MAX_LENGTH = 64;

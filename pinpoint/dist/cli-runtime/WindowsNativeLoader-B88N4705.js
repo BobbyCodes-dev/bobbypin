@@ -71,7 +71,7 @@ function init_WindowsNativeLoader() {
 			jobMemoryLimit: z.literal(true).optional()
 		});
 		bindingSchema = z.strictObject({ call: z.custom((value) => typeof value === "function") });
-		missingWindowsNativeFileReason = (file) => `Missing packaged Windows native file native/windows/build/${file} (ENOENT). Restore both native/windows/build/manifest.json and native/windows/build/pinpoint-windows-x64.node from the pinpoint-agents@${PACKAGE_METADATA.version} tarball or build them with native/windows/README.md; no native artifact was loaded.`;
+		missingWindowsNativeFileReason = (file) => `Missing packaged Windows native file native/windows/build/${file} (ENOENT). Restore both native/windows/build/manifest.json and native/windows/build/pinpoint-windows-x64.node from the bobbypin-pinpoint@${PACKAGE_METADATA.version} tarball or build them with native/windows/README.md; no native artifact was loaded.`;
 		WINDOWS_NATIVE_LOAD_REFUSED_REMEDIATION = "The file matched the package manifest, so restoring or reinstalling it will not help. If Windows reports that an Application Control policy blocked the file, Smart App Control or an App Control for Business policy refused it. Windows native controls, which Ghidra and JADX need on Windows, stay unavailable; pinpoint setup can still register clients. Run PINPOINT on a host whose policy allows this file, or ask the PINPOINT maintainers about a signed build.";
 		readPackagedWindowsNativeFile = (file, read) => {
 			try {

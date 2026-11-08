@@ -26,7 +26,7 @@ export const exportEnvironmentBundleInputSchema = z.strictObject({
         .describe("Opt-in template rules, each at most once; [] applies only the format rules. Default: after-uid-literal, opaque-token, sibling-variance and prefix-variance."),
     package_tarball: absoluteLocalPathStringSchema
         .optional()
-        .describe("Absolute path of a packed pinpoint-agents tarball the bundle installs instead of the registry package of this version."),
+        .describe("Absolute path of a packed bobbypin-pinpoint tarball the bundle installs instead of the registry package of this version."),
     dry_run: z
         .boolean()
         .default(false)

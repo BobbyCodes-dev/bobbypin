@@ -8,8 +8,8 @@ One CLI and one MCP server. Everything returns structured JSON, so an agent can
 consume it without screen-scraping.
 
 ```bash
-npm i -g pinpoint-agents
-pinpoint --version
+npm i -g https://github.com/BobbyCodes-dev/bobbypin/releases/download/bobbypin-pinpoint-v1.0.0/bobbypin-pinpoint-1.0.0.tgz
+pinpoint --version   # 1.0.0
 ```
 
 ## What it answers

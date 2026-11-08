@@ -32412,7 +32412,7 @@ function init_environmentBundleExport() {
 			output_directory: absoluteLocalPathStringSchema.describe("Absolute, absent output directory for the bundle folder; parent must exist."),
 			name: z.string().min(1).optional().describe("Env folder and env id (kebab-case). Default: the manifest's name; required when the capture's origin is a loopback or IP address."),
 			template_rules: z.array(z.enum(TEMPLATE_RULES)).optional().describe("Opt-in template rules, each at most once; [] applies only the format rules. Default: after-uid-literal, opaque-token, sibling-variance and prefix-variance."),
-			package_tarball: absoluteLocalPathStringSchema.optional().describe("Absolute path of a packed pinpoint-agents tarball the bundle installs instead of the registry package of this version."),
+			package_tarball: absoluteLocalPathStringSchema.optional().describe("Absolute path of a packed bobbypin-pinpoint tarball the bundle installs instead of the registry package of this version."),
 			dry_run: z.boolean().default(false).describe("Report what the bundle would hold without writing anything.")
 		});
 		environmentBuildReportSchema = z.strictObject({
@@ -93025,7 +93025,7 @@ function init_environmentBundle() {
 		ENVIRONMENT_EXPORT_OPERATION = "environment-export";
 		BUNDLE_BASE_IMAGE = `node:${PACKAGE_METADATA.pinnedNodeVersion}-bookworm-slim`;
 		BUNDLE_MCP_PORT = 18765;
-		BUNDLE_TARBALL_NAME = "pinpoint-agents.tgz";
+		BUNDLE_TARBALL_NAME = "bobbypin-pinpoint.tgz";
 		BUNDLE_NAME = /^[a-z0-9]+(?:-[a-z0-9]+)*$/u;
 		BUNDLE_NAME_MAX_LENGTH = 64;
 		WINDOWS_RESERVED_NAME = /^(?:con|prn|aux|nul|com[1-9]|lpt[1-9])$/u;

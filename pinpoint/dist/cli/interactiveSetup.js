@@ -180,7 +180,7 @@ const renderKeyboardHelp = (accessible) => {
 };
 const cliInvocation = (environment) => {
     const runner = invokingPackageRunner(environment);
-    return runner === undefined ? "pinpoint" : `${runner} pinpoint-agents`;
+    return runner === undefined ? "pinpoint" : `${runner} bobbypin-pinpoint`;
 };
 const renderReadyCapabilities = (result, readyClients, environment) => {
     writeLine("◆  What you can do now");

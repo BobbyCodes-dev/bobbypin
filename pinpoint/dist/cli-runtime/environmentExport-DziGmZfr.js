@@ -33,7 +33,7 @@ function init_environmentBundle() {
 		ENVIRONMENT_EXPORT_OPERATION = "environment-export";
 		BUNDLE_BASE_IMAGE = `node:${PACKAGE_METADATA.pinnedNodeVersion}-bookworm-slim`;
 		BUNDLE_MCP_PORT = 18765;
-		BUNDLE_TARBALL_NAME = "pinpoint-agents.tgz";
+		BUNDLE_TARBALL_NAME = "bobbypin-pinpoint.tgz";
 		BUNDLE_NAME = /^[a-z0-9]+(?:-[a-z0-9]+)*$/u;
 		BUNDLE_NAME_MAX_LENGTH = 64;
 		WINDOWS_RESERVED_NAME = /^(?:con|prn|aux|nul|com[1-9]|lpt[1-9])$/u;

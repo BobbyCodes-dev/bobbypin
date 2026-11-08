@@ -102,7 +102,7 @@ function init_Update() {
 				currentVersion,
 				latestVersion: targetVersion,
 				reason: "unknown-install-method",
-				remediation: "Update this installation with the package manager or source checkout that owns it. For a one-off latest invocation, use npx pinpoint-agents@latest."
+				remediation: "Update this installation with the package manager or source checkout that owns it. For a one-off latest build, install the release asset: npm i -g https://github.com/BobbyCodes-dev/bobbypin/releases/download/bobbypin-pinpoint-v1.0.0/bobbypin-pinpoint-1.0.0.tgz"
 			};
 			const installed = await host.installVersion(installation, targetVersion, output);
 			if (!installed.ok) return {
