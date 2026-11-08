@@ -1,8 +1,8 @@
 {
-  "name": "pinpoint-agents",
+  "name": "bobbypin-pinpoint",
   "mcpName": "io.github.BobbyCodes-dev/pinpoint",
   "version": "1.0.0",
-  "description": "Static analysis and decompilation evidence for binaries, managed code, APKs and packaged applications. One CLI and MCP server for agents.",
+  "description": "bobbypin deep analysis: static analysis and decompilation evidence for binaries, managed code, APKs and packaged applications. One CLI and MCP server for agents.",
   "license": "MIT",
   "repository": {
     "type": "git",
@@ -37,7 +37,7 @@
   },
   "bin": {
     "pinpoint": "scripts/pinpoint.mjs",
-    "pinpoint-agents": "scripts/pinpoint.mjs"
+    "bobbypin-pinpoint": "scripts/pinpoint.mjs"
   },
   "engines": {
     "node": "^22.23.4 || ^24.22.1 || >=26.12.1"

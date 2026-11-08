@@ -41,14 +41,14 @@ DEFAULT_TIMEOUT_S = 180          # native analysis on a large binary is not fast
 # bobbypin's own vocabulary; this string only exists so a missing pack can be
 # installed. A user cannot install a tool they are not told the name of.
 #
-# Installed from our own release asset rather than the npm registry: the package
-# name `pinpoint-agents` is reserved for a registry publish, but a registry
-# account could not be created from this network (www.npmjs.com answers 403 to
-# every path, including /signup and /login). The tarball is byte-identical to
-# what would be published, and `npm i -g <tarball-url>` needs no account.
+# Installed from our own release asset rather than the npm registry: the registry
+# cannot be reached from this network (www.npmjs.com answers 403 to every path,
+# including /signup and /login), so no account exists to publish under. The
+# tarball is the same one that would be published, it carries the bobbypin name,
+# and `npm i -g <tarball-url>` needs no account.
 PACK_INSTALL = (
     "npm i -g https://github.com/BobbyCodes-dev/bobbypin/releases/download/"
-    "pinpoint-v1.0.0/pinpoint-agents-1.0.0.tgz"
+    "bobbypin-pinpoint-v1.0.0/bobbypin-pinpoint-1.0.0.tgz"
 )
 PACK_BINARIES = ("pinpoint",)
 
