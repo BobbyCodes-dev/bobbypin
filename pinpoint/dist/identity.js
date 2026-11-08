@@ -10,9 +10,9 @@ export const PRODUCT_IDENTITY = {
     registrationPackageSpecifier: `${PACKAGE_METADATA.name}@${PACKAGE_METADATA.version}`,
     packageVersion: PACKAGE_METADATA.version,
     cliBinary: "pinpoint",
-    mcpCommand: `npx -y ${PACKAGE_METADATA.name}@${PACKAGE_METADATA.version} mcp`,
+    mcpCommand: "pinpoint mcp",
     mcpServerKey: "pinpoint",
-    skillName: "reverse-engineer-anything",
+    skillName: "pinpoint",
     skillVersion: PACKAGE_METADATA.skillVersion,
     configFileName: "pinpoint.json",
 };
