@@ -31609,7 +31609,7 @@ function init_interactiveSetup() {
 		};
 		cliInvocation = (environment) => {
 			const runner = invokingPackageRunner(environment);
-			return runner === undefined ? "pinpoint" : `${runner} pinpoint-agents`;
+			return runner === undefined ? "pinpoint" : `${runner} bobbypin-pinpoint`;
 		};
 		renderReadyCapabilities = (result, readyClients, environment) => {
 			writeLine("◆  What you can do now");
@@ -48902,7 +48902,7 @@ function init_environmentCommands() {
 					name: z$1.string().optional().describe("Env folder and env id (kebab-case); default the manifest's name, or the capture file's name when the origin is a loopback or IP address"),
 					templateRule: z$1.array(z$1.enum(TEMPLATE_RULES)).optional().describe("Opt-in template rule; repeat to select several. Replaces the default after-uid-literal, opaque-token, sibling-variance and prefix-variance"),
 					formatRulesOnly: z$1.boolean().default(false).describe("Apply only the four format rules, the views' own default"),
-					packageTarball: localPathStringSchema.optional().describe("Packed pinpoint-agents tarball (npm pack) copied into the env folder and installed by the Dockerfile instead of the registry package pinned to this version"),
+					packageTarball: localPathStringSchema.optional().describe("Packed bobbypin-pinpoint tarball (npm pack) copied into the env folder and installed by the Dockerfile instead of the registry package pinned to this version"),
 					dryRun: z$1.boolean().default(false).describe("Run every stage and report, but write nothing"),
 					captureTimeoutMs: inspectWebNetworkCaptureInputSchema.shape.capture_timeout_ms
 				}),
@@ -48971,7 +48971,7 @@ function init_environmentCommands() {
 				}),
 				options: z$1.object({
 					evidence: evidenceOption,
-					packageTarball: localPathStringSchema.optional().describe("Packed pinpoint-agents tarball (npm pack) copied into the env folder and installed by the Dockerfile instead of the registry package pinned to this version"),
+					packageTarball: localPathStringSchema.optional().describe("Packed bobbypin-pinpoint tarball (npm pack) copied into the env folder and installed by the Dockerfile instead of the registry package pinned to this version"),
 					name: z$1.string().optional().describe("Env folder and env id (kebab-case); default the manifest's name")
 				}),
 				run: ({ args, options }) => logCliCommand(logger, CLI_COMMANDS.environmentExport, () => exportEnvironmentCommand({

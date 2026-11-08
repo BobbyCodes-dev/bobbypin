@@ -494,7 +494,7 @@ function init_MsixPackageStorage() {
 					continue;
 				}
 				const family = packagePrivateStorageFamily(resolved, packages);
-				if (family !== undefined) return `The PINPOINT launcher ${part} is stored at ${resolved}, inside the private storage of MSIX package ${family}. Only processes started by that app can see it at ${part}, and Windows removes it with the package, so other clients could not start this registration. Install PINPOINT from a terminal that the app did not start (for example with \`npm install -g pinpoint-agents\`), then rerun setup from that terminal.`;
+				if (family !== undefined) return `The PINPOINT launcher ${part} is stored at ${resolved}, inside the private storage of MSIX package ${family}. Only processes started by that app can see it at ${part}, and Windows removes it with the package, so other clients could not start this registration. Install PINPOINT from a terminal that the app did not start (for example with \`npm install -g https://github.com/BobbyCodes-dev/bobbypin/releases/download/bobbypin-pinpoint-v1.0.0/bobbypin-pinpoint-1.0.0.tgz\`), then rerun setup from that terminal.`;
 			}
 			return undefined;
 		};
@@ -808,7 +808,7 @@ function init_SupportedClients() {
 			const root = env.SAND_DATA_ROOT;
 			return root !== undefined && root !== "" && isAbsolute(root) ? root : join(home, ".grokbot");
 		};
-		GROK_BOT_MANUAL_REGISTRATION_REMEDIATION = "Grok Bot keeps connectors in the signed-in account and runs them on its hosted computer. Setup does not write that account store, and a data-directory mcp.json is not a registration. In the Grok Bot chat, add a custom MCP server named pinpoint that runs on the Bot's computer with `npx -y pinpoint-agents@<version> mcp`. Do not put credentials in the command or arguments. A stdio server on this machine is not attached.";
+		GROK_BOT_MANUAL_REGISTRATION_REMEDIATION = "Grok Bot keeps connectors in the signed-in account and runs them on its hosted computer. Setup does not write that account store, and a data-directory mcp.json is not a registration. In the Grok Bot chat, add a custom MCP server named pinpoint that runs on the Bot's computer with `pinpoint mcp` (installed from the release asset). Do not put credentials in the command or arguments. A stdio server on this machine is not attached.";
 		manualRegistrationRemediation = (clientName) => clientName === "grok_bot" ? GROK_BOT_MANUAL_REGISTRATION_REMEDIATION : undefined;
 		registrationPersistenceDetail = (client) => {
 			const name = client.displayName ?? client.name;

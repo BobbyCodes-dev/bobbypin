@@ -60,7 +60,7 @@ export const packagePrivateLauncherBlocker = (command, packagesDirectory, canoni
         }
         const family = packagePrivateStorageFamily(resolved, packages);
         if (family !== undefined)
-            return `The PINPOINT launcher ${part} is stored at ${resolved}, inside the private storage of MSIX package ${family}. Only processes started by that app can see it at ${part}, and Windows removes it with the package, so other clients could not start this registration. Install PINPOINT from a terminal that the app did not start (for example with \`npm install -g pinpoint-agents\`), then rerun setup from that terminal.`;
+            return `The PINPOINT launcher ${part} is stored at ${resolved}, inside the private storage of MSIX package ${family}. Only processes started by that app can see it at ${part}, and Windows removes it with the package, so other clients could not start this registration. Install PINPOINT from a terminal that the app did not start (for example with \`npm install -g https://github.com/BobbyCodes-dev/bobbypin/releases/download/bobbypin-pinpoint-v1.0.0/bobbypin-pinpoint-1.0.0.tgz\`), then rerun setup from that terminal.`;
     }
     return undefined;
 };

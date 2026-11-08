@@ -346,7 +346,7 @@ const registerBuildCommand = (cli, logger, environment) => {
                 .describe("Apply only the four format rules, the views' own default"),
             packageTarball: localPathStringSchema
                 .optional()
-                .describe("Packed pinpoint-agents tarball (npm pack) copied into the env folder and installed by the Dockerfile instead of the registry package pinned to this version"),
+                .describe("Packed bobbypin-pinpoint tarball (npm pack) copied into the env folder and installed by the Dockerfile instead of the registry package pinned to this version"),
             dryRun: z
                 .boolean()
                 .default(false)
@@ -435,7 +435,7 @@ const registerExportCommand = (cli, logger) => {
             evidence: evidenceOption,
             packageTarball: localPathStringSchema
                 .optional()
-                .describe("Packed pinpoint-agents tarball (npm pack) copied into the env folder and installed by the Dockerfile instead of the registry package pinned to this version"),
+                .describe("Packed bobbypin-pinpoint tarball (npm pack) copied into the env folder and installed by the Dockerfile instead of the registry package pinned to this version"),
             name: z
                 .string()
                 .optional()

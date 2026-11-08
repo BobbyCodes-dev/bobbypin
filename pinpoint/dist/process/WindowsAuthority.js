@@ -30,7 +30,7 @@ export const inspectWindowsNativeReadiness = (platform, observation) => {
             : failureStage === "load"
                 ? WINDOWS_NATIVE_LOAD_REFUSED_REMEDIATION
                 : failureStage === "artifact"
-                    ? "Use the matching Windows x64 PINPOINT package, or restore native/windows/build/manifest.json and native/windows/build/pinpoint-windows-x64.node from the same-version pinpoint-agents tarball or build them with native/windows/README.md. The loader checks version, ABI, architecture, and digest before granting authority; no download or install is performed automatically."
+                    ? "Use the matching Windows x64 PINPOINT package, or restore native/windows/build/manifest.json and native/windows/build/pinpoint-windows-x64.node from the same-version bobbypin-pinpoint tarball or build them with native/windows/README.md. The loader checks version, ABI, architecture, and digest before granting authority; no download or install is performed automatically."
                     : failureStage === "inspection"
                         ? "Install the matching Windows x64 PINPOINT package; its native inspection must prove every required security control."
                         : "Inspect the preserved native self-test error. Check that the process's temporary directory is writable local NTFS and that its filesystem, DACL, Job Object, and cleanup operations are permitted. Resolve the reported constraint, then rerun pinpoint doctor; reinstalling Ghidra or Java cannot fix this self-test.",

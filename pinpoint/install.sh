@@ -2,8 +2,9 @@
 # pinpoint installer - thin wrapper over npm so there is exactly one install path.
 set -euo pipefail
 
-PACKAGE="pinpoint-agents"
-VERSION="latest"
+PACKAGE="bobbypin-pinpoint"
+VERSION="1.0.0"
+RELEASE_BASE="https://github.com/BobbyCodes-dev/bobbypin/releases/download"
 
 usage() {
   cat <<'USAGE'
@@ -31,8 +32,7 @@ if [ "$node_major" -lt 22 ]; then
   fail "Node.js 22 or newer is required; found $(node -v)."
 fi
 
-spec="$PACKAGE"
-[ "$VERSION" = "latest" ] || spec="$PACKAGE@$VERSION"
+spec="$RELEASE_BASE/bobbypin-pinpoint-v$VERSION/$PACKAGE-$VERSION.tgz"
 
 printf 'Installing %s...\n' "$spec" >&2
 npm install -g --no-audit --no-fund "$spec" || fail "npm install failed."

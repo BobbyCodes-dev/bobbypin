@@ -199,9 +199,10 @@ evidence_id}` (or `{kind: "evidence-file", path}`), an absolute
 `output_directory` that does not exist yet and whose parent does, and a `name`
 (required when the application runs on `localhost` or an IP address). It returns
 the coverage again, `tool_count`, the written files and warnings; `dry_run:
-true` reports without writing. The bundle installs `pinpoint-agents` of this PINPOINT's
-version from the registry; when the user runs an unreleased PINPOINT build, pass the
-`package_tarball` they give you (a packed `pinpoint-agents` tarball) instead.
+true` reports without writing. The bundle installs `bobbypin-pinpoint` of this PINPOINT's
+version. That name is not on the npm registry yet, so pass `package_tarball`
+pointing at a packed `bobbypin-pinpoint` tarball (or the release asset at
+https://github.com/BobbyCodes-dev/bobbypin/releases/download/bobbypin-pinpoint-v1.0.0/bobbypin-pinpoint-1.0.0.tgz).
 
 Tell the user how many tools answer from the state, which writes are served and
 which are withheld and why, and the run command (`agent-env run <folder>`). Say
