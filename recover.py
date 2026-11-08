@@ -28,6 +28,7 @@ CLI:
 from __future__ import annotations
 
 import json
+import marshal
 import os
 import shutil
 import struct
@@ -35,6 +36,11 @@ import subprocess
 import sys
 import time
 import zipfile
+
+try:  # POSIX only; the lock is an optimisation, not a requirement
+    import fcntl as _fcntl
+except ImportError:  # pragma: no cover - Windows
+    _fcntl = None
 
 try:
     import bobbypin as bp
@@ -62,6 +68,19 @@ LANGUAGE_BY_EXT = {
     ".xml": "XML", ".json": "JSON", ".txt": "text",
 }
 
+# Which engines can actually read which detected kind. A forced engine that is
+# not in the list is refused by name instead of being silently ignored.
+ENGINES_BY_KIND = {
+    "dotnet": ("ilspycmd",),
+    "jar": ("jadx",),
+    "apk": ("jadx",),
+    "asar": ("asar",),
+    "pyinstaller": ("pyinstaller", "pycdc"),
+    "pe": ("ghidra",),
+    "elf": ("ghidra",),
+    "macho": ("ghidra",),
+}
+
 
 def _which(name: str, extra_paths=()) -> str | None:
     found = shutil.which(name)
@@ -81,16 +100,49 @@ def _dotnet_paths():
 
 PYINST_MAGIC = b"MEI\x0c\x0b\x0a\x0b\x0e"
 
-
-# Python bytecode magic per minor version, needed because PyInstaller stores a
-# bare marshal blob: no .pyc header, so every decompiler rejects it as-is.
-_PYC_MAGIC = {
-    "39": 3425, "310": 3439, "311": 3495, "312": 3531, "313": 3571, "314": 3611,
+# Section names that mean "what you are about to decompile is an unpacker stub,
+# not the program". Read from the PE section table; cheap and read-only.
+PACKER_SECTIONS = {
+    "upx0", "upx1", "upx2", "upx!", ".aspack", ".adata", ".packed", ".petite",
+    ".themida", ".vmp0", ".vmp1", ".mpress1", ".mpress2", ".enigma1", ".enigma2",
+    "pec1", "pec2", ".nsp0", ".nsp1",
 }
 
 
-def _pyc_header(pyver: int) -> bytes:
-    magic = _PYC_MAGIC.get(str(pyver), 3495)
+# Python bytecode magic per version, needed because PyInstaller stores a bare
+# marshal blob: no .pyc header, so every decompiler rejects it as-is. A wrong
+# magic here makes the decompiler fail silently, so the version is resolved from
+# the bundle itself rather than from the cookie field alone.
+_PYC_MAGIC = {
+    (3, 6): 3379, (3, 7): 3394, (3, 8): 3413, (3, 9): 3425, (3, 10): 3439,
+    (3, 11): 3495, (3, 12): 3531, (3, 13): 3571, (3, 14): 3611,
+}
+
+
+def _python_version(data, cookie_pyver):
+    """(major, minor) for the bundle.
+
+    PyInstaller writes `pyver` either as a bare minor (3.7 -> 7 in 3.x-era
+    builds) or as major*100+minor (3.7 -> 307 in current builds). Neither is
+    authoritative on its own: the interpreter DLL name in the stub is.
+    """
+    import re
+    found = re.search(rb"python(\d)\.?(\d{1,2})\.dll", data, re.I)
+    if found:
+        try:
+            return int(found.group(1)), int(found.group(2))
+        except ValueError:
+            pass
+    if cookie_pyver:
+        if cookie_pyver >= 100:
+            return cookie_pyver // 100, cookie_pyver % 100
+        if 4 <= cookie_pyver <= 20:
+            return 3, cookie_pyver
+    return None
+
+
+def _pyc_header(version) -> bytes:
+    magic = _PYC_MAGIC.get(version, 3495)
     # magic, flags(0), timestamp/hash (zeroed): enough for pycdc and friends
     return magic.to_bytes(2, "little") + b"\r\n" + b"\x00" * 12
 
@@ -156,16 +208,61 @@ def _pyinstaller_index(data):
     return pkg_start, resolved, pyver
 
 
+def _pyz_modules(blob):
+    """[(name, typecode, pos, length)] from a PyInstaller PYZ archive.
+
+    The PYZ bundle holds every pure-Python module the app imports, which is
+    where the application's own code lives: the archive TOC only lists the
+    entry script. Layout: 'PYZ\\0', 4-byte pyc magic, big-endian TOC offset,
+    zlib-compressed marshal blobs, then a marshalled dict at the TOC offset.
+    """
+    if len(blob) < 12 or blob[:4] != b"PYZ\0":
+        return []
+    try:
+        toc_offset = struct.unpack("!I", blob[8:12])[0]
+        toc = marshal.loads(blob[toc_offset:])
+    except (struct.error, ValueError, EOFError, TypeError):
+        return []
+    if isinstance(toc, list):  # older builds marshal a list of (name, meta) pairs
+        toc = dict(toc)
+    if not isinstance(toc, dict):
+        return []
+    out = []
+    for name, meta in toc.items():
+        try:
+            typecode, pos, length = meta[0], int(meta[1]), int(meta[2])
+        except (IndexError, TypeError, ValueError):
+            continue
+        out.append((str(name), typecode, pos, length))
+    return out
+
+
 def _unpack_pyinstaller(data, out_dir):
-    """Extract the payload; code entries get a .pyc header so they decompile."""
+    """Extract the payload; code entries get a .pyc header so decompile works.
+
+    Returns (written, (major, minor), cookie_pyver, pyz_modules_written).
+    """
     _start, entries, pyver = _pyinstaller_index(data)
     if not entries:
-        return [], pyver
+        return [], None, None, 0
     import zlib
+    version = _python_version(data, pyver)
     written = []
-    header = _pyc_header(pyver or 311)
+    header = _pyc_header(version)
+    pyz_written = 0
+
+    def write_code(rel_path, code_blob):
+        nonlocal pyz_written
+        if not code_blob.startswith(header[:2]):
+            code_blob = header + code_blob
+        dest = os.path.join(out_dir, rel_path)
+        os.makedirs(os.path.dirname(dest) or out_dir, exist_ok=True)
+        with open(dest, "wb") as fh:
+            fh.write(code_blob)
+        pyz_written += 1
+
     for name, etype, flag, off, csize, _usize in entries:
-        if etype in ("z", "o"):
+        if etype == "o":
             continue
         blob = data[off:off + csize]
         if flag:
@@ -174,18 +271,34 @@ def _unpack_pyinstaller(data, out_dir):
             except zlib.error:
                 pass
         safe = name.replace("\\", "/").lstrip("/")
+        if etype == "z":
+            # PYZ archive: unpack every module it carries, keeping the dotted
+            # name as a path so package structure survives.
+            for mod, _tc, pos, length in _pyz_modules(blob):
+                try:
+                    code = zlib.decompress(blob[pos:pos + length])
+                except zlib.error:
+                    continue
+                rel = "_pyz/" + mod.replace(".", "/") + ".pyc"
+                write_code(rel, code)
+            # base_library.zip and other plain zips are data, not modules
+            if blob[:4] == b"PK\x03\x04":
+                dest = os.path.join(out_dir, "_pyz", os.path.basename(safe) or "archive.zip")
+                os.makedirs(os.path.dirname(dest), exist_ok=True)
+                with open(dest, "wb") as fh:
+                    fh.write(blob)
+            continue
         if etype in ("s", "m", "M"):
-            # PyInstaller keeps the marshalled code object, with no file header
-            if not blob[:2] in (b"\x0d\x0d", b"\r\n") and not blob.startswith(header[:2]):
-                blob = header + blob
             if not safe.endswith((".pyc", ".py")):
                 safe += ".pyc"
+            write_code(safe, blob)
+            continue
         dest = os.path.join(out_dir, safe)
         os.makedirs(os.path.dirname(dest) or out_dir, exist_ok=True)
         with open(dest, "wb") as fh:
             fh.write(blob)
         written.append((safe, len(blob)))
-    return written, pyver
+    return written, version, pyver, pyz_written
 
 
 def detect_kind(path: str) -> dict:
@@ -201,6 +314,11 @@ def detect_kind(path: str) -> dict:
                 pe = bp.parse_pe(fh.read())
             out["dotnet"] = bool(pe.get("dotnet"))
             out["machine"] = pe.get("machine")
+            names = {str(s.get("name", "")).strip("\x00").lower()
+                     for s in (pe.get("sections") or [])}
+            packed = sorted(names & PACKER_SECTIONS)
+            if packed:
+                out["packed"] = packed
         except (ValueError, OSError):
             pass
 
@@ -266,6 +384,16 @@ def _count_tree(root: str):
             "languages": languages, "sample": sorted(files)[:25]}
 
 
+# Extensions that hold recovered source, as opposed to the engine's own index
+# and journal files. "ok" is decided on these: a run that writes an index and no
+# code has recovered nothing, whatever its exit status said.
+SOURCE_EXTS = {".c", ".h", ".cs", ".java", ".kt", ".js", ".mjs", ".ts", ".py", ".go", ".rs"}
+
+
+def _source_files(tree, exts=SOURCE_EXTS):
+    return sum(tree["by_extension"].get(e, 0) for e in exts)
+
+
 def _run(argv, timeout, cwd=None, env=None):
     started = time.time()
     try:
@@ -292,6 +420,8 @@ def _result(path, out, kind_info, engine, **extra):
         "target_written": False,
         "read_only": True,
     }
+    if kind_info.get("packed"):
+        payload["packed"] = kind_info["packed"]
     payload.update(extra)
     return payload
 
@@ -305,13 +435,28 @@ def recover_source(path, out=None, engine=None, force=False, timeout=DEFAULT_TIM
     if not os.path.isfile(path):
         return {"ok": False, "error": f"no such file: {path}"}
 
-    kind_info = detect_kind(path)
+    try:
+        kind_info = detect_kind(path)
+    except OSError as exc:
+        return {"ok": False, "target": path,
+                "error": f"cannot read the target: {exc.strerror or exc}",
+                "remediation": "check the file permissions, or copy the artifact somewhere "
+                               "readable and re-run"}
     kind = kind_info["kind"]
     if engine and kind == "pe" and engine in ("ilspycmd", "dotnet"):
         kind_info["dotnet"] = True
         kind = kind_info["kind"] = "dotnet"
     elif kind == "pe" and kind_info.get("dotnet"):
         kind = kind_info["kind"] = "dotnet"
+
+    if engine:
+        allowed = ENGINES_BY_KIND.get(kind, ())
+        if engine not in allowed:
+            return {"ok": False, "kind": kind, "target": path, "engine": engine,
+                    "error": f"engine '{engine}' cannot read a '{kind}' target",
+                    "remediation": ("engines for this kind: " + ", ".join(allowed))
+                    if allowed else "this kind has no source-recovery engine",
+                    "hint": "drop --engine to let the target type pick its engine"}
 
     stem = os.path.splitext(os.path.basename(path))[0]
     out = os.path.abspath(os.path.expanduser(out)) if out else os.path.join(
@@ -320,31 +465,86 @@ def recover_source(path, out=None, engine=None, force=False, timeout=DEFAULT_TIM
     if os.path.abspath(out) == path or out.startswith(path + os.sep):
         return {"ok": False, "error": "output directory cannot be the target itself"}
 
+    if os.path.exists(out) and not os.path.isdir(out):
+        return {"ok": False, "kind": kind, "output_dir": out,
+                "error": "the output path exists and is not a directory",
+                "remediation": "pick a different --out (or delete that file first)",
+                "hint": "the target was not touched; nothing was written"}
     try:
         already = os.listdir(out)
     except FileNotFoundError:
         already = []
+    except OSError as exc:
+        return {"ok": False, "kind": kind, "output_dir": out,
+                "error": f"cannot use the output directory: {exc.strerror or exc}",
+                "remediation": "point --out at a writable directory",
+                "hint": "the target was not touched; nothing was written"}
     if already and not force:
         return {"ok": False, "kind": kind, "output_dir": out,
                 "error": "output directory is not empty; pass force=true (or --force) to write into it",
                 "hint": "recover_source writes next to the target by default: "
                         f"{os.path.join(os.path.dirname(path), stem + '_src')}"}
-    os.makedirs(out, exist_ok=True)
+    try:
+        os.makedirs(out, exist_ok=True)
+    except OSError as exc:
+        # unwritable path, a parent that is a file, a read-only mount next to the
+        # target: the caller passed an output location this process cannot use.
+        return {"ok": False, "kind": kind, "output_dir": out,
+                "error": f"cannot create the output directory: {exc.strerror or exc}",
+                "remediation": "point --out at a writable directory, for example "
+                               f"--out {os.path.expanduser('~/' + stem + '_src')}",
+                "hint": "the target was not touched; nothing was written"}
+    if not os.access(out, os.W_OK):
+        return {"ok": False, "kind": kind, "output_dir": out,
+                "error": f"output directory is not writable: {out}",
+                "remediation": "pick a writable --out directory or fix its permissions",
+                "hint": "the target was not touched; nothing was written"}
 
     if kind == "dotnet":
-        return _recover_dotnet(path, out, kind_info, timeout)
-    if kind in ("jar", "apk"):
-        return _recover_with_jadx(path, out, kind_info, timeout)
-    if kind == "asar":
-        return _recover_asar(path, out, kind_info, timeout)
-    if kind == "pyinstaller":
-        return _recover_pyinstaller(path, out, kind_info, timeout)
-    if kind in ("pe", "elf", "macho"):
-        return _recover_native(path, out, kind_info, timeout)
-    return _result(path, out, kind_info, None, ok=False,
-                   error=f"no source-recovery engine for kind '{kind}'",
-                   hint="pinpoint can still inventory it: pinpoint inspect-artifact",
-                   files=0)
+        recover = lambda: _recover_dotnet(path, out, kind_info, timeout)
+    elif kind in ("jar", "apk"):
+        recover = lambda: _recover_with_jadx(path, out, kind_info, timeout)
+    elif kind == "asar":
+        recover = lambda: _recover_asar(path, out, kind_info, timeout)
+    elif kind == "pyinstaller":
+        recover = lambda: _recover_pyinstaller(path, out, kind_info, timeout)
+    elif kind in ("pe", "elf", "macho"):
+        recover = lambda: _recover_native(path, out, kind_info, timeout)
+    else:
+        return _result(path, out, kind_info, None, ok=False,
+                       error=f"no source-recovery engine for kind '{kind}'",
+                       hint="pinpoint can still inventory it: pinpoint inspect-artifact",
+                       files=0)
+
+    # An advisory lock serialises two concurrent runs that write the same output
+    # tree: both would otherwise pass the empty-directory check and then
+    # interleave. It is taken on a lock file in the temp directory, keyed by the
+    # output path, never on the target: ilspycmd and friends open the artifact
+    # with sharing rules that a second handle on it breaks. The kernel drops the
+    # lock when the process dies, so there is no stale state to clean up.
+    handle = None
+    if _fcntl is not None:
+        import hashlib
+        import tempfile
+        key = hashlib.sha1(out.encode("utf-8", "surrogateescape")).hexdigest()[:16]
+        lock_path = os.path.join(tempfile.gettempdir(), f"bobbypin-recover-{key}.lock")
+        try:
+            handle = open(lock_path, "a+b")
+            _fcntl.flock(handle.fileno(), _fcntl.LOCK_EX | _fcntl.LOCK_NB)
+        except OSError:
+            if handle:
+                handle.close()
+            return {"ok": False, "kind": kind, "target": path, "output_dir": out,
+                    "error": "another recovery run is already writing to this output directory",
+                    "hint": "wait for it to finish, or point --out somewhere else and run again"}
+    try:
+        return recover()
+    finally:
+        if handle is not None:
+            try:
+                _fcntl.flock(handle.fileno(), _fcntl.LOCK_UN)
+            finally:
+                handle.close()
 
 
 def _recover_dotnet(path, out, kind_info, timeout) -> dict:
@@ -372,8 +572,10 @@ def _recover_dotnet(path, out, kind_info, timeout) -> dict:
                        files=0)
     tree = _count_tree(out)
     ok = run["code"] == 0 and tree["files"] > 0
-    return _result(path, out, kind_info, "ilspycmd", ok=ok,
-                   files=tree["files"], by_extension=tree["by_extension"],
+    source_files = _source_files(tree, {".cs"})
+    return _result(path, out, kind_info, "ilspycmd", ok=ok and source_files > 0,
+                   files=tree["files"], source_files=source_files,
+                   by_extension=tree["by_extension"],
                    languages=tree["languages"], sample=tree["sample"],
                    duration_s=run["duration_s"],
                    error=None if ok else (run["stderr"] or run["stdout"]).strip()[-1500:],
@@ -393,15 +595,33 @@ def _recover_with_jadx(path, out, kind_info, timeout) -> dict:
                             "use javap -c on the entries you care about")
     run = _run([jadx, "-d", out, "--no-debug-info", path], timeout)
     tree = _count_tree(out)
-    ok = tree["files"] > 0
+    by_ext = tree["by_extension"]
+    source_files = _source_files(tree, {".java", ".kt"})
+    ok = source_files > 0
+    failed = 0
+    for dirpath, _dirs, names in os.walk(out):
+        for name in names:
+            if name.endswith(".java"):
+                try:
+                    with open(os.path.join(dirpath, name), errors="ignore") as fh:
+                        body = fh.read()
+                except OSError:
+                    continue
+                if "Method not decompiled" in body or "failed to decompile" in body:
+                    failed += 1
+    notes = ["Java sources are recovered from the DEX/class bytecode; names may be "
+             "obfuscated but control flow is intact",
+             "XML/manifest/assets from the archive are written alongside the code "
+             "(decoded where jadx can decode them)"]
+    if failed:
+        notes.append(f"{failed} of {by_ext.get('.java', 0)} .java file(s) could not be fully "
+                     "decompiled by jadx; they keep a stub with the original signatures")
     return _result(path, out, kind_info, "jadx", ok=ok,
-                   files=tree["files"], by_extension=tree["by_extension"],
+                   files=tree["files"], source_files=source_files, by_extension=by_ext,
                    languages=tree["languages"], sample=tree["sample"],
-                   duration_s=run["duration_s"],
+                   duration_s=run["duration_s"], decompile_failures=failed,
                    error=None if ok else (run["stderr"] or run["stdout"]).strip()[-1500:],
-                   notes=["Java sources are recovered from the DEX/class bytecode; names may be "
-                          "obfuscated but control flow is intact",
-                          "resources are not exported by this run, only code"])
+                   notes=notes)
 
 
 def _recover_asar(path, out, kind_info, timeout) -> dict:
@@ -414,9 +634,10 @@ def _recover_asar(path, out, kind_info, timeout) -> dict:
     files = parsed if isinstance(parsed, list) else (parsed.get("files") or [])
     bp.unpack_asar(data, files, out)
     tree = _count_tree(out)
-    ok = tree["files"] > 0
+    source_files = _source_files(tree, {".js", ".mjs", ".cjs", ".ts", ".jsx", ".tsx", ".json", ".html"})
+    ok = source_files > 0
     return _result(path, out, kind_info, "asar", ok=ok,
-                   files=tree["files"], by_extension=tree["by_extension"],
+                   files=tree["files"], source_files=source_files, by_extension=tree["by_extension"],
                    languages=tree["languages"], sample=tree["sample"], duration_s=0,
                    error=None if ok else "the archive listed no files",
                    notes=["Electron ships readable JavaScript, so this is the real source, not a "
@@ -425,37 +646,64 @@ def _recover_asar(path, out, kind_info, timeout) -> dict:
                           "present, are kept as-is"])
 
 
+def _module_name(pyc_path, root):
+    """'pkg/sub.pyc' under <root>/_pyz -> 'pkg.sub'."""
+    rel = os.path.relpath(pyc_path, root).replace(os.sep, "/")
+    if rel.startswith("_pyz/"):
+        rel = rel[len("_pyz/"):]
+    return rel[:-4].replace("/", ".") if rel.endswith(".pyc") else rel
+
+
 def _recover_pyinstaller(path, out, kind_info, timeout) -> dict:
     with open(path, "rb") as fh:
         data = fh.read()
-    written, pyver = _unpack_pyinstaller(data, out)
-    tree = _count_tree(out)
+    written, version, _cookie_pyver, pyz_count = _unpack_pyinstaller(data, out)
     decompiler = _which("pycdc")
-    decompiled = 0
-    py_label = f"{pyver // 100}.{pyver % 100:02d}" if pyver else None
+    decompiled = skipped_stdlib = failed = 0
+    py_label = f"{version[0]}.{version[1]}" if version else None
     notes = [f"PyInstaller bundle: {len(written)} payload file(s) extracted"
+             + (f", {pyz_count} module(s) unpacked from the PYZ archive" if pyz_count else "")
              + (f", bytecode for Python {py_label}" if py_label else ""),
-             "the code entries are marshalled bytecode: a .pyc header is synthesised "
-             "so a decompiler will open them"]
+             "every code entry is marshalled bytecode with no file header: a .pyc header "
+             "is synthesised so a decompiler will open it"]
+    pycs = [os.path.join(dp, n) for dp, _d, ns in os.walk(out) for n in ns if n.endswith(".pyc")]
+    stdlib = set(getattr(sys, "stdlib_module_names", ()))
     if decompiler:
-        for dirpath, _dirs, names in os.walk(out):
-            for name in names:
-                if name.endswith(".pyc"):
-                    dst = os.path.join(dirpath, name[:-4] + ".py")
-                    run = _run([decompiler, os.path.join(dirpath, name)], timeout=300)
-                    if run["code"] == 0 and run["stdout"].strip():
-                        with open(dst, "w", encoding="utf-8") as fh:
-                            fh.write(run["stdout"])
-                        decompiled += 1
-        notes.append(f"{decompiled} .pyc file(s) turned back into .py with pycdc")
-        tree = _count_tree(out)
+        for src in pycs:
+            mod = _module_name(src, out)
+            # Stdlib modules are the same everywhere; decompiling them costs
+            # minutes and tells the reader nothing about this app.
+            if stdlib and mod.split(".")[0] in stdlib and mod != "__main__":
+                skipped_stdlib += 1
+                continue
+            dst = src[:-4] + ".py"
+            run = _run([decompiler, src], timeout=300)
+            if run["code"] == 0 and run["stdout"].strip():
+                with open(dst, "w", encoding="utf-8") as fh:
+                    fh.write(run["stdout"])
+                decompiled += 1
+            else:
+                failed += 1
+        notes.append(f"{decompiled} .pyc file(s) turned back into .py with pycdc"
+                     + (f" ({skipped_stdlib} stdlib module(s) left as .pyc)" if skipped_stdlib else "")
+                     + (f", {failed} failed" if failed else ""))
+        if pycs and decompiled == 0:
+            notes.append("pycdc could not read these code objects"
+                         + (f" (built by Python {py_label})" if py_label else "")
+                         + ": its supported bytecode range is narrower than the bundle's. "
+                           "The .pyc files are intact and complete, so try a decompiler "
+                           "matching that Python version (decompyle3 / uncompyle6 for 3.x, "
+                           "pycdc from git for the newest).")
     else:
         notes.append("install pycdc (Decompyle++) to turn the .pyc bytecode back into .py")
+    tree = _count_tree(out)
     ok = tree["files"] > 0
     return _result(path, out, kind_info, "pyinstaller" + ("+pycdc" if decompiler else ""),
-                   ok=ok, files=tree["files"], by_extension=tree["by_extension"],
+                   ok=ok, files=tree["files"], source_files=_source_files(tree, {".py"}),
+                   by_extension=tree["by_extension"],
                    languages=tree["languages"], sample=tree["sample"], duration_s=0,
-                   decompiled_files=decompiled,
+                   python_version=py_label, code_entries=len(pycs),
+                   decompiled_files=decompiled, decompile_failures=failed,
                    error=None if ok else "nothing was extracted", notes=notes)
 
 
@@ -489,16 +737,23 @@ def _recover_native(path, out, kind_info, timeout) -> dict:
         detail = json.loads(run["stdout"] or "{}")
     except ValueError:
         detail = {}
-    ok = tree["files"] > 0
+    source_files = _source_files(tree, {".c", ".h"})
+    ok = source_files > 0
+    notes = ["C pseudocode from the Ghidra decompiler: control flow and call structure "
+             "are faithful, original variable names are gone",
+             "this is a reconstruction for reading, not compilable source"]
+    if kind_info.get("packed"):
+        notes.insert(0, f"target looks packed ({', '.join(kind_info['packed'])}): what was "
+                        "decompiled is the unpacker stub, not the real code. Unpack the "
+                        "artifact first (run it in the sandbox, or pinpoint's unpack step) "
+                        "and recover from the unpacked image")
     return _result(path, out, kind_info, "ghidra", ok=ok,
-                   files=tree["files"], by_extension=tree["by_extension"],
+                   files=tree["files"], source_files=source_files, by_extension=tree["by_extension"],
                    languages=tree["languages"], sample=tree["sample"],
                    duration_s=run["duration_s"], providers=providers,
                    functions=detail.get("functions_written") or detail.get("written"),
                    error=None if ok else (run["stderr"] or run["stdout"]).strip()[-1500:],
-                   notes=["C pseudocode from the Ghidra decompiler: control flow and call structure "
-                          "are faithful, original variable names are gone",
-                          "this is a reconstruction for reading, not compilable source"])
+                   notes=notes)
 
 
 def main(argv=None) -> int:

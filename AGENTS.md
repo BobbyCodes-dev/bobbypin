@@ -95,8 +95,25 @@ reads structure. It never writes a byte of the target.
 | .NET assembly | `ilspycmd` | a decompiled C# project |
 | Android `.apk`, Java `.jar` | `jadx` | Java sources plus resources |
 | Electron `.asar` | built in | the shipped JavaScript, exactly as shipped |
-| PyInstaller bundle | built in, `pycdc` optional | extracted payload, `.pyc` turned back into `.py` when pycdc is present |
+| PyInstaller bundle | built in, `pycdc` optional | payload plus every module in the PYZ archive, non-stdlib `.pyc` turned back into `.py` |
 | native PE / ELF / Mach-O | Ghidra through pinpoint | one `.c` file per function, with provenance headers |
+
+Manifest fields that decide whether a run is trustworthy:
+
+- `ok` — true only when source files were produced. An engine that exits 0 after
+  writing just its own index is reported as a failure, not a success.
+- `source_files` — count of code files, excluding index and journal files.
+- `files` — everything written, including extracted resources.
+- `python_version`, `decompiled_files`, `decompile_failures` — PyInstaller only.
+- `decompile_failures` — jadx only: `.java` stubs that kept signatures but no body.
+- `packed` — PE section names that mean the target is packed (`upx0`, `.vmp0`,
+  `.themida`...). The decompiler is then reading the unpacker stub, and the run
+  says so instead of presenting a 4-function stub as the program.
+
+`engine` is checked against the detected kind: forcing `--engine ilspycmd` on an
+ELF is refused with the list of engines that can read it, never silently swapped.
+Two concurrent runs on the same artifact are refused by an advisory lock, so two
+agents cannot interleave writes into one output tree.
 
 An engine that is not installed is a reported error with its install line, never a
 silent no-op. Native recovery needs Ghidra; without it the answer says so and
@@ -262,10 +279,23 @@ procedure below). The only kind the byte-patch engine supports.
 
 ### pyinstaller (kind: `pyinstaller`)
 
-1. Detection is automatic; bobbypin unpacks to `<name>_unpacked/` and lists
-   interesting strings from the bundled code.
-2. Decompile the `.pyc` payload with pycdc (Decompyle++) or uncompyle6.
-3. Patch the recovered Python source and rebuild, or attach the generated
+1. Detection is automatic and comes before any native engine: the stub is a
+   valid ELF/PE on its own, and decompiling it instead of unpacking the payload
+   is a wrong answer, not a slow one.
+2. `recover_source` extracts the payload **and** the PYZ archive, which is where
+   the app's own modules live. `PYZ-00.pyz` holds every pure-Python module; the
+   entry script alone is only `__main__`. Modules land under `_pyz/<dotted/name>.pyc`
+   and non-stdlib ones are decompiled to `.py` in place.
+3. The bytecode version is read from the bundle (the `python3X.dll` name in the
+   stub, not the cookie field, which is a bare minor in 3.x-era builds). A wrong
+   magic byte makes every decompiler fail silently, so `python_version` is
+   reported in the manifest: check it before believing a zero.
+4. Stdlib modules are left as `.pyc` on purpose (251 of 554 on a wxPython app);
+   decompiling them costs minutes and says nothing about the target.
+5. pycdc cannot read every construct in every version; the manifest reports
+   `decompiled_files` and `decompile_failures`. Failed modules keep their
+   complete `.pyc`, so a decompiler matching that version still gets them.
+6. Patch the recovered Python source and rebuild, or attach the generated
    Frida monitor to the running exe to confirm behavior live.
 
 ### dotnet (pe32 with `"dotnet": true`)

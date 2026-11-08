@@ -99,12 +99,20 @@ python3 recover.py app.exe --json           # manifest: engine, files, languages
 | .NET assembly | ilspycmd | one `.cs` per type, plus a `.csproj` you can open in an IDE |
 | Android `.apk`, Java `.jar` | jadx | Java sources under `sources/`, resources and manifest beside them |
 | Electron `.asar` | built in | the real JavaScript tree, not a decompilation |
-| PyInstaller bundle | built in, `pycdc` optional | the extracted payload, `.pyc` turned back into `.py` when pycdc is present |
+| PyInstaller bundle | built in, `pycdc` optional | the payload plus every module in the `PYZ` archive, non-stdlib `.pyc` turned back into `.py` |
 | native PE / ELF / Mach-O | Ghidra through pinpoint | one `.c` per function, with provider and address in a header comment |
 
-Real run, on a 6.5 MB Android package: **4,707 files, 2,584 `.java`, 1,503 `.xml`, 16 s**.
-On a native binary: **187 files in 18 s**. On a .NET assembly: **95 `.cs` and a
-`.csproj` in 2 s**.
+Real runs, on real artifacts:
+
+- A 6.5 MB Android package: **4,707 files, 2,584 `.java`, 1,503 `.xml`, 16 s**
+- A 13 MB PyInstaller GUI app: **851 files, 554 modules out of the `PYZ`, 230 `.py` recovered, 2 s**
+- An 11 MB native Windows binary: **one `.c` per function**, 20 to 140 s depending on size
+- A .NET assembly: **95 `.cs` and a `.csproj` in 2 s**
+
+`ok` means source files came back, not that a subprocess exited 0. A run that
+writes only its engine's index reports failure. Packed targets (`upx0`, `.vmp0`,
+`.themida`) say so instead of presenting the unpacker stub as the program, and a
+forced `--engine` that cannot read the detected kind is refused by name.
 
 Missing engine means a named error with the line that fixes it, never a silent
 no-op:
