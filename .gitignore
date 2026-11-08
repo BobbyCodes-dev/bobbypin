@@ -9,3 +9,9 @@ venv/
 .env
 *.log
 *_unpacked/
+
+# vendored pinpoint package: its build output is the shipped artifact
+!pinpoint/dist/
+!pinpoint/dist/**
+!pinpoint/native/windows/build/
+!pinpoint/native/windows/build/**
