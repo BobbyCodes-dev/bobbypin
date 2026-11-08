@@ -255,6 +255,11 @@ def cmd_help(_args):
             "telemetry": '{"action":"status|enable|disable|flush","endpoint":"https://..."} -> '
                          'opt-in run reporting to your own dashboard. Off by default; aggregate '
                          'run facts only, never the binary and never a full path.',
+            "recover_source": '{"path":"app.apk","out":"src"?,"engine":"jadx"?,"force":false} '
+                              '-> recover a source tree WITHOUT patching anything: '
+                              'C# for .NET (ilspycmd), Java for APK/JAR (jadx), JavaScript for '
+                              'Electron, Python for PyInstaller, C pseudocode for native (Ghidra); '
+                              'returns the engine used, files written and any missing-engine fix',
             "quit": "{} -> close session",
         },
         "recommended_flow_pe": [
@@ -1475,6 +1480,30 @@ def cmd_pinpoint_analyze(args):
         return _err("pinpoint_analyze", "%s: %s" % (type(ex).__name__, ex))
 
 
+def cmd_recover_source(args):
+    """Recover source from a target without patching it.
+
+    The other half of the tool: `patch` changes behaviour, this reads structure.
+    Writes a source tree (C#, Java, JS, Python or C pseudocode depending on the
+    target) and returns a manifest, including which engine was used and why one
+    might be missing.
+    """
+    path = (args or {}).get("path") or (args or {}).get("file")
+    if not path:
+        return _err("recover_source", "path required")
+    try:
+        import recover as _recover
+    except Exception as exc:  # pragma: no cover - import shim
+        return _err("recover_source", f"recovery module unavailable: {exc}")
+    out = _recover.recover_source(
+        path,
+        out=(args or {}).get("out"),
+        engine=(args or {}).get("engine"),
+        force=bool((args or {}).get("force")),
+        timeout=int((args or {}).get("timeout") or 1800),
+    )
+    return {"ok": bool(out.get("ok")), "cmd": "recover_source", "data": out}
+
 COMMANDS = {
     "help":             cmd_help,
     "pinpoint_status":  cmd_pinpoint_status,
@@ -1497,6 +1526,7 @@ COMMANDS = {
     "honeypot_deploy":  cmd_honeypot_deploy,
     "honeypot_check":   cmd_honeypot_check,
     "telemetry":        cmd_telemetry,
+    "recover_source":   cmd_recover_source,
 }
 
 

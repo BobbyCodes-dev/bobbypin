@@ -4,7 +4,7 @@
 
 <h1 align="center">bobbypin</h1>
 
-<p align="center"><b>Find the branch that decides "licensed", and flip it.</b><br>
+<p align="center"><b>Recover the source, or find the branch that decides "licensed" and flip it.</b><br>
 A reverse-engineering suite for binaries you have no source for.</p>
 
 <p align="center">
@@ -27,8 +27,11 @@ else fits and holds one thing in place.
 ```bash
 git clone https://github.com/BobbyCodes-dev/bobbypin.git
 cd bobbypin && ./install.sh          # toolchain, sandbox, VM, analysis layer, probe
+python3 recover.py target/myapp/app.apk        # source tree, nothing patched
 python3 bobbypin_ai.py plan '{"path":"target/myapp/app.exe"}'
 ```
+
+Two jobs, one tool: **read the program** or **change it**.
 
 Five minutes of context, one page: **[START-HERE.md](START-HERE.md)**. Driving it
 with an AI: **[AGENTS.md](AGENTS.md)**.
@@ -39,6 +42,7 @@ with an AI: **[AGENTS.md](AGENTS.md)**.
 
 | | Job | What you get |
 |---|---|---|
+| 📖 | **Recover source** | a readable tree with no patch step at all: C# from .NET, Java from APK/JAR, the shipped JS from Electron, C pseudocode from native |
 | 🔓 | **Crack licence checks** | the exact conditional jump guarding the check, verified by a real disassembler, patched length-preserving in a copy |
 | 🔑 | **Bypass password and login gates** | same loop against activation and auth branches, in PE and in Electron apps |
 | 🛡 | **Defeat anti-debug protection** | the checks found with evidence, the response classified (exit, nag, wipe, bugcheck), the forceable ones neutralised |
@@ -73,6 +77,47 @@ raw_result:
 Every answer is an evidence record with coverage and limitations attached, not a
 paragraph of prose. Anything that cannot be done on this host says
 `provider_unavailable` with the exact setting to fix, instead of guessing.
+
+<br>
+
+## Get the source, not the patch
+
+Reading a program and changing it are separate jobs, so they are separate
+commands. `recover_source` writes a source tree and states which engine produced
+it. It never writes to the target and there is no patch code on that path.
+
+```bash
+python3 recover.py app.apk                  # Java sources + resources, via jadx
+python3 recover.py App.dll --out src        # a C# project, via ilspycmd
+python3 recover.py app.asar                 # the shipped JavaScript, as shipped
+python3 recover.py app.exe                  # C pseudocode, one file per function
+python3 recover.py app.exe --json           # manifest: engine, files, languages
+```
+
+| Target | Engine | What lands in the output directory |
+|---|---|---|
+| .NET assembly | ilspycmd | one `.cs` per type, plus a `.csproj` you can open in an IDE |
+| Android `.apk`, Java `.jar` | jadx | Java sources under `sources/`, resources and manifest beside them |
+| Electron `.asar` | built in | the real JavaScript tree, not a decompilation |
+| PyInstaller bundle | built in, `pycdc` optional | the extracted payload, `.pyc` turned back into `.py` when pycdc is present |
+| native PE / ELF / Mach-O | Ghidra through pinpoint | one `.c` per function, with provider and address in a header comment |
+
+Real run, on a 6.5 MB Android package: **4,707 files, 2,584 `.java`, 1,503 `.xml`, 16 s**.
+On a native binary: **187 files in 18 s**. On a .NET assembly: **95 `.cs` and a
+`.csproj` in 2 s**.
+
+Missing engine means a named error with the line that fixes it, never a silent
+no-op:
+
+```console
+$ python3 recover.py App.dll
+recover: ilspycmd is not installed
+  fix: dotnet tool install -g ilspycmd  (needs the .NET SDK 8+)
+  or:  without it, pinpoint can still read managed metadata: pinpoint inspect-managed-members <path>
+```
+
+Native recovery needs Ghidra (or Hopper, IDA, Kuna). Without one the answer says
+so, and `disasm` still reads the instructions.
 
 <br>
 
@@ -327,6 +372,7 @@ the only gate. Module 3 removes the training wheels.
 | File | What it is |
 |---|---|
 | [START-HERE.md](START-HERE.md) | the one-page tour |
+| [recover.py](recover.py) | source recovery, all engines, with `--help` |
 | [AGENTS.md](AGENTS.md) | complete operating manual for an AI agent: every command, argument, JSON shape and decision rule |
 | [target/AUTHORIZATION.md](target/AUTHORIZATION.md) | standing scope, already granted |
 | [pinpoint/skills/pinpoint/SKILL.md](pinpoint/skills/pinpoint/SKILL.md) | the deep-analysis skill |

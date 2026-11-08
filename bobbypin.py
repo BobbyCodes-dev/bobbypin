@@ -863,6 +863,15 @@ def main():
     ap.add_argument("--json", action="store_true", help="machine-readable report")
     ap.add_argument("-y", "--yes", action="store_true", help="auto-confirm dependency installs")
     ap.add_argument("--skip-deps", action="store_true", help="skip dependency check entirely")
+    ap.add_argument("--recover", action="store_true",
+                    help="recover source from the target instead of analysing it for patches: "
+                         "C# for .NET, Java for APK/JAR, JS for Electron, Python for PyInstaller, "
+                         "C pseudocode for native. Writes a source tree, patches nothing")
+    ap.add_argument("--recover-out", metavar="DIR", help="with --recover: output directory")
+    ap.add_argument("--recover-engine", metavar="NAME",
+                    help="with --recover: force an engine (ilspycmd, jadx, asar, ghidra)")
+    ap.add_argument("--recover-force", action="store_true",
+                    help="with --recover: write into a non-empty output directory")
     args = ap.parse_args()
 
     if not args.skip_deps:
@@ -877,6 +886,28 @@ def main():
             args.file = input("path to file: ").strip().strip('"')
     if not args.file:
         ap.error("no file selected - drag a file onto the terminal or pass a path")
+
+    if args.recover:
+        from recover import recover_source
+        result = recover_source(args.file, out=args.recover_out,
+                                engine=args.recover_engine, force=args.recover_force)
+        if args.json:
+            print(json.dumps(result, indent=2))
+        elif result.get("ok"):
+            print(f"recovered {result['files']} file(s) into {result['output_dir']}")
+            print(f"  engine   : {result['engine']} ({result['kind']})")
+            if result.get("languages"):
+                print(f"  languages: {', '.join(result['languages'])}")
+            for note in result.get("notes") or []:
+                print(f"  note     : {note}")
+            print("  the target was not modified and nothing was patched")
+        else:
+            print(f"recover: {result.get('error')}")
+            if result.get("remediation"):
+                print(f"  fix: {result['remediation']}")
+            if result.get("hint"):
+                print(f"  or:  {result['hint']}")
+        return
 
     data = open(args.file, "rb").read()
 
@@ -893,7 +924,7 @@ def main():
             with open(os.path.join(out_dir, n), "rb") as f:
                 for off, s in scan_blob_strings(f.read(), 15):
                     print(f"  {n}:{off}  {s[:80]}")
-        print("\ndecompile .class files with jadx or CFR for readable Java.")
+        print("\nfull source tree: python3 bobbypin.py %r --recover" % args.file)
         return
 
     asar_files = parse_asar(data)

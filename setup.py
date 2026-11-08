@@ -515,6 +515,34 @@ def _find_jadx() -> str | None:
     return None
 
 
+def _find_dotnet() -> str | None:
+    root = os.environ.get("DOTNET_ROOT") or os.path.expanduser("~/.dotnet")
+    return root if os.path.isdir(root) else None
+
+
+def report_source_engines() -> None:
+    """One line per source-recovery engine, with the fix when it is missing."""
+    dotnet = _find_dotnet()
+    tools = [dotnet, os.path.join(dotnet, "tools")] if dotnet else []
+    engines = [
+        ("ilspycmd  (.NET -> C#)", shutil.which("ilspycmd", path=os.pathsep.join(tools + [os.environ.get("PATH", "")])),
+         "dotnet tool install -g ilspycmd   (needs the .NET SDK)"),
+        ("jadx      (APK/JAR -> Java)", shutil.which("jadx"),
+         "download from github.com/skylot/jadx/releases and put jadx on PATH"),
+        ("pycdc     (PyInstaller -> .py)", shutil.which("pycdc"),
+         "build Decompyle++ and put pycdc on PATH (optional: the payload extracts without it)"),
+        ("ghidra    (native -> C pseudocode)", _find_ghidra(),
+         "install Ghidra 12.1.x and set GHIDRA_INSTALL_DIR"),
+    ]
+    step("source recovery engines")
+    for label, found, fix in engines:
+        if found:
+            ok(label)
+        else:
+            warn(f"{label}: missing")
+            info(f"fix: {fix}")
+
+
 def write_pinpoint_env(prefix: str) -> None:
     """Rewrite the managed block in ~/.config/pinpoint-env.sh; leave the rest alone."""
     ghidra = _find_ghidra()
@@ -533,6 +561,10 @@ def write_pinpoint_env(prefix: str) -> None:
         body.append(f'export PATH="$JAVA_HOME/bin:$PATH"')
     if ghidra:
         body.append(f'export GHIDRA_INSTALL_DIR="{ghidra}"')
+    dotnet_root = _find_dotnet()
+    if dotnet_root:
+        body.append(f'export DOTNET_ROOT="{dotnet_root}"')
+        body.append(f'export PATH="{dotnet_root}/tools:{dotnet_root}:$PATH"')
     if jadx:
         body.append(f'export PINPOINT_JADX_MCP_JAR="{jadx}"')
     if apktool:
@@ -593,6 +625,7 @@ def ensure_pinpoint(args) -> bool:
             ok(f"already installed: {existing} ({version})")
             if args.check:
                 info("would refresh the env file and provider list")
+                report_source_engines()
                 return True
             write_pinpoint_env(os.path.dirname(os.path.dirname(existing)))
             live = report_pinpoint_providers(existing)
@@ -638,6 +671,7 @@ def ensure_pinpoint(args) -> bool:
         info("no Ghidra found: analyze/decompile stay locked until you install it")
     live = report_pinpoint_providers(pinpoint)
     info(f"deep providers live: {', '.join(live) if live else 'none yet (provider-free probes work)'}")
+    report_source_engines()
     return True
 
 
