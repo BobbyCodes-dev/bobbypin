@@ -598,6 +598,36 @@ def recover_source(path, out=None, engine=None, force=False, timeout=DEFAULT_TIM
                 handle.close()
 
 
+def _recover_wpf(path, out, ilspy, timeout, env) -> dict:
+    """Turn the assembly's compiled BAML pages back into .xaml beside the code.
+
+    ilspycmd's project export gives the C#, not the UI: a WPF app's screens live in
+    binary BAML inside ``<Assembly>.g.resources``. This pass runs the same engine
+    once per stream, so a single ``recover_source`` call returns the code and the
+    screens. An assembly that is not WPF simply produces nothing here, which is
+    not an error.
+    """
+    try:
+        import baml_to_xaml
+    except Exception as exc:                             # pragma: no cover - import trouble
+        return {"count": 0, "note": f"BAML pass skipped: {exc}"}
+    try:
+        report = baml_to_xaml.extract(path, os.path.join(out, "xaml"),
+                                      timeout=timeout, exe=ilspy)
+    except Exception as exc:
+        return {"count": 0, "note": f"BAML pass failed: {exc}"}
+    if report.get("count"):
+        note = (f"{report['count']} compiled WPF page(s) turned back into .xaml under "
+                f"xaml/; a page's markup is readable even when the C# is obfuscated")
+        if report.get("errors"):
+            note += f" ({len(report['errors'])} stream(s) did not decompile)"
+        return {"count": report["count"], "note": note}
+    if report.get("errors"):
+        return {"count": 0,
+                "note": f"BAML pass produced nothing: {report['errors'][0]['error']}"}
+    return {"count": 0, "note": None}
+
+
 def _recover_dotnet(path, out, kind_info, timeout) -> dict:
     ilspy = _which("ilspycmd", _dotnet_paths())
     if not ilspy:
@@ -623,15 +653,22 @@ def _recover_dotnet(path, out, kind_info, timeout) -> dict:
                        files=0)
     tree = _count_tree(out)
     ok = run["code"] == 0 and tree["files"] > 0
+    wpf = _recover_wpf(path, out, ilspy, timeout, env) if ok else {"count": 0, "note": None}
+    if wpf["count"]:
+        tree = _count_tree(out)
     source_files = _source_files(tree, {".cs"})
+    notes = ["decompiled C# project; open the .csproj in an IDE or read the .cs files",
+             "obfuscated assemblies come back with meaningless identifiers but keep their structure"]
+    if wpf["note"]:
+        notes.insert(0, wpf["note"])
     return _result(path, out, kind_info, "ilspycmd", ok=ok and source_files > 0,
                    files=tree["files"], source_files=source_files,
                    by_extension=tree["by_extension"],
                    languages=tree["languages"], sample=tree["sample"],
+                   wpf_xaml=wpf["count"],
                    duration_s=run["duration_s"],
                    error=None if ok else (run["stderr"] or run["stdout"]).strip()[-1500:],
-                   notes=["decompiled C# project; open the .csproj in an IDE or read the .cs files",
-                          "obfuscated assemblies come back with meaningless identifiers but keep their structure"])
+                   notes=notes)
 
 
 def _recover_with_jadx(path, out, kind_info, timeout) -> dict:

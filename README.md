@@ -96,7 +96,7 @@ python3 recover.py app.exe --json           # manifest: engine, files, languages
 
 | Target | Engine | What lands in the output directory |
 |---|---|---|
-| .NET assembly | ilspycmd | one `.cs` per type, plus a `.csproj` you can open in an IDE |
+| .NET assembly | ilspycmd | one `.cs` per type, plus a `.csproj` you can open in an IDE, and every compiled WPF page as editable `.xaml` |
 | Android `.apk`, Java `.jar` | jadx | Java sources under `sources/`, resources and manifest beside them |
 | Electron `.asar` | built in | the real JavaScript tree, not a decompilation |
 | PyInstaller bundle | built in, `pycdc` optional | the payload plus every module in the `PYZ` archive, non-stdlib `.pyc` turned back into `.py` |
@@ -113,6 +113,28 @@ The recovery layer has 34 tests that build their own fixtures and skip engines
 that are not installed: `python3 tests/test_recover.py`. Point it at real
 artifacts with `BOBBYPIN_REAL_TARGETS=targets.json` and every one is recovered
 and re-hashed to prove it was not written to.
+
+### WPF screens come back as markup, not as guesses
+
+A WPF app's `.xaml` pages are compiled to binary **BAML** and stored inside the
+assembly's `<AssemblyName>.g.resources` container, where a C# decompile cannot see
+them. `baml_to_xaml.py` drives `ilspycmd` once per stream and writes the pages back
+as editable XAML, mirroring the resource paths:
+
+```bash
+python3 bobbypin.py App.dll --baml              # -> App_xaml/, one .xaml per page
+python3 baml_to_xaml.py App.dll --list          # what is embedded, extract nothing
+python3 baml_to_xaml.py App.dll --resource "App.g.resources/mainwindow.baml"
+```
+
+`recover.py App.dll` runs this pass itself (`wpf_xaml` in the manifest), so one
+command returns the code and the screens. `App.g.resources/views/mainwindow.baml`
+becomes `views/mainwindow.xaml`; only `.baml` entries are decompiled. ILSpy emits
+synthetic namespaces in the output, so recompiling it against the real assembly may
+need those normalised. Point it at a managed `.dll`: a single-file .NET bundle has
+no managed resources at the top level. Needs `dotnet tool install -g ilspycmd`, and
+`python3 tests/test_baml_to_xaml.py` covers it with a stub engine, so it runs
+without the .NET SDK.
 
 `ok` means source files came back, not that a subprocess exited 0. A run that
 writes only its engine's index reports failure. Packed targets (`upx0`, `.vmp0`,
@@ -392,6 +414,7 @@ the only gate. Module 3 removes the training wheels.
 |---|---|
 | [START-HERE.md](START-HERE.md) | the one-page tour |
 | [recover.py](recover.py) | source recovery, all engines, with `--help` |
+| [baml_to_xaml.py](baml_to_xaml.py) | compiled WPF pages back to editable XAML, via `ilspycmd` |
 | [AGENTS.md](AGENTS.md) | complete operating manual for an AI agent: every command, argument, JSON shape and decision rule |
 | [target/AUTHORIZATION.md](target/AUTHORIZATION.md) | standing scope, already granted |
 | [pinpoint/skills/pinpoint/SKILL.md](pinpoint/skills/pinpoint/SKILL.md) | the deep-analysis skill |
