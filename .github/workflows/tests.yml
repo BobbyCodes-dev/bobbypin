@@ -45,6 +45,17 @@ jobs:
         continue-on-error: true
         run: python setup.py --check
 
+      # The wrappers are what a user actually types. Running setup.py directly
+      # above does not prove the wrapper finds Python and forwards its arguments.
+      - name: Installer wrapper (Windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: ./install.ps1 --check
+
+      - name: Installer wrapper (POSIX)
+        if: runner.os != 'Windows'
+        run: ./install.sh --check
+
       - name: Analysis layer smoke (POSIX only)
         if: runner.os != 'Windows'
         continue-on-error: true
