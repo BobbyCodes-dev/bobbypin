@@ -47,14 +47,32 @@ jobs:
 
       # The wrappers are what a user actually types. Running setup.py directly
       # above does not prove the wrapper finds Python and forwards its arguments.
+      # `--help` must exit 0; `--check` legitimately exits 1 on a bare runner
+      # (nothing is installed yet), so only a harder failure counts as a break.
       - name: Installer wrapper (Windows)
         if: runner.os == 'Windows'
         shell: pwsh
-        run: ./install.ps1 --check
+        run: |
+          $help = ./install.ps1 --help 2>&1 | Out-String
+          if ($help -notmatch 'one-command setup') {
+            Write-Host $help
+            throw "install.ps1 did not reach setup.py"
+          }
+          ./install.ps1 --check
+          $rc = $LASTEXITCODE
+          if ($rc -gt 1) { throw "install.ps1 failed hard (exit $rc)" }
+          exit 0
 
       - name: Installer wrapper (POSIX)
         if: runner.os != 'Windows'
-        run: ./install.sh --check
+        run: |
+          ./install.sh --help | grep -q 'one-command setup' \
+            || { echo "install.sh did not reach setup.py"; exit 1; }
+          set +e
+          ./install.sh --check
+          rc=$?
+          set -e
+          if [ "$rc" -gt 1 ]; then echo "install.sh failed hard (exit $rc)"; exit 1; fi
 
       - name: Analysis layer smoke (POSIX only)
         if: runner.os != 'Windows'
