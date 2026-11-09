@@ -404,28 +404,46 @@ def _source_files(tree, exts=SOURCE_EXTS):
 
 
 def _run(argv, timeout, cwd=None, env=None):
+    """Run one engine. Always returns a dict; never raises, never hangs."""
     # Windows cannot CreateProcess a .cmd/.bat shim directly, and jadx and npm
     # both install as one. Everything else gets the plain argv.
     if os.name == "nt" and argv and str(argv[0]).lower().endswith((".cmd", ".bat")):
         argv = ["cmd", "/c", *argv]
     started = time.time()
+
+    def done(code, stdout="", stderr=""):
+        return {"code": code, "stdout": stdout, "stderr": stderr,
+                "duration_s": round(time.time() - started, 2)}
+
     try:
-        proc = subprocess.run(argv, capture_output=True, text=True, timeout=timeout,
-                              cwd=cwd, env=env)
-        return {"code": proc.returncode, "stdout": proc.stdout, "stderr": proc.stderr,
-                "duration_s": round(time.time() - started, 2)}
+        # A process group of its own, so a timeout can take the whole tree down:
+        # a .bat wrapper that spawns an interpreter will not die with its parent
+        # on Windows, and the pipes stay open until the grandchild exits.
+        proc = subprocess.Popen(argv, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                                text=True, cwd=cwd, env=env,
+                                creationflags=subprocess.CREATE_NEW_PROCESS_GROUP
+                                if os.name == "nt" else 0)
     except FileNotFoundError:
-        return {"code": 127, "stdout": "", "stderr": f"{argv[0]} not found",
-                "duration_s": round(time.time() - started, 2)}
+        return done(127, stderr=f"{argv[0]} not found")
     except OSError as exc:
         # Not executable, wrong architecture, no execute permission: an engine
         # that cannot be launched is a reported error, never a traceback.
-        return {"code": 126, "stdout": "",
-                "stderr": f"cannot execute {argv[0]}: {exc.strerror or exc}",
-                "duration_s": round(time.time() - started, 2)}
+        return done(126, stderr=f"cannot execute {argv[0]}: {exc.strerror or exc}")
+
+    try:
+        stdout, stderr = proc.communicate(timeout=timeout)
     except subprocess.TimeoutExpired:
-        return {"code": 124, "stdout": "", "stderr": f"timed out after {timeout}s",
-                "duration_s": round(time.time() - started, 2)}
+        if os.name == "nt":
+            subprocess.run(["taskkill", "/F", "/T", "/PID", str(proc.pid)],
+                           capture_output=True, check=False)
+        else:
+            proc.kill()
+        try:
+            proc.communicate(timeout=15)
+        except subprocess.TimeoutExpired:
+            pass
+        return done(124, stderr=f"timed out after {timeout}s")
+    return done(proc.returncode, stdout, stderr)
 
 
 def _result(path, out, kind_info, engine, **extra):
