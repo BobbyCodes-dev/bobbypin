@@ -22,6 +22,12 @@ if [ ! -f setup.py ] || [ ! -f bobbypin.py ] || [ ! -f START-HERE.md ]; then
   echo "make-bundle: run this from a complete checkout" >&2
   exit 1
 fi
+# Both entry points ship or the download is not ready for all three platforms.
+if [ ! -f install.sh ] || [ ! -f install.ps1 ]; then
+  echo "make-bundle: install.sh and install.ps1 must both be present." >&2
+  echo "  without install.ps1 the bundle installs on Linux and macOS only." >&2
+  exit 1
+fi
 
 mkdir -p dist
 # Ship the source, the vendored analysis layer, and every instruction file.
@@ -40,4 +46,4 @@ tar --create --gzip --file "$out" \
 
 printf 'built %s (%s)\n' "$out" "$(du -h "$out" | cut -f1)"
 printf 'contents:\n'
-tar --list --file "$out" | grep -E 'START-HERE|install\.sh|setup\.py|AGENTS\.md|AUTHORIZATION|vendor/' | sed 's/^/  /'
+tar --list --file "$out" | grep -E 'START-HERE|install\.sh|install\.ps1|setup\.py|AGENTS\.md|AUTHORIZATION|vendor/' | sed 's/^/  /'
