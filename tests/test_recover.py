@@ -67,12 +67,20 @@ def native_engine_ready():
     return recover.pp is not None and recover.pp.find_cli() is not None
 
 
-def make_elf(directory):
-    """A real ELF: /bin/true if present, otherwise skipped by the caller."""
+def make_native(directory):
+    """A real native binary plus the kind this platform's format has.
+
+    /bin/true is ELF on Linux and Mach-O on macOS, so a test that hardcodes "elf"
+    is testing the laptop rather than the tool.
+    """
     for candidate in ("/bin/true", "/bin/echo"):
         if os.path.exists(candidate):
-            return candidate
-    return None
+            kind = "macho" if sys.platform == "darwin" else "elf"
+            return candidate, kind
+    pe = make_pe(directory)
+    if pe:
+        return pe, "pe"
+    return None, None
 
 
 def make_pe(directory, name="fixture.exe"):
@@ -180,7 +188,7 @@ class Fixtures:
     def build(cls):
         cls.root = tempfile.mkdtemp(prefix="bobbypin-recover-tests-")
         p = cls.paths
-        p["elf"] = make_elf(cls.root)
+        p["native"], p["native_kind"] = make_native(cls.root)
         p["pe"] = make_pe(cls.root)
         p["apk"] = make_apk(cls.root)
         p["apk_flutter"] = make_apk(cls.root, "flutter.apk", flutter=True)
@@ -477,15 +485,17 @@ class PyInstallerTests(unittest.TestCase):
         path = Fixtures.paths.get("pyi")
         if not path:
             self.skipTest(pyinstaller_skip_reason())
-        fake = os.path.join(Fixtures.root, "fake-decompiler.sh")
-        with open(fake, "w") as fh:
-            fh.write('#!/bin/sh\necho "# recovered by the override"\necho "SENTINEL = 1"\n')
-        os.chmod(fake, 0o755)
+        # A shell script is not runnable on Windows, so drive the override with
+        # this interpreter: that is a valid command on every platform.
+        fake_script = os.path.join(Fixtures.root, "fake_decompiler.py")
+        with open(fake_script, "w") as fh:
+            fh.write('print("# recovered by the override")\nprint("SENTINEL = 1")\n')
+        fake = '"%s" "%s"' % (sys.executable, fake_script)
         out = os.path.join(Fixtures.root, "out", "pyi_override")
         shutil.rmtree(out, ignore_errors=True)
         r = recover.recover_source(path, out=out, pyc_decompiler=fake)
         self.assertTrue(r["ok"], r.get("error"))
-        self.assertIn("fake-decompiler", r["engine"])
+        self.assertIn(os.path.basename(sys.executable).replace(".exe", ""), r["engine"])
         pys = [p for p in walk(out) if p.endswith(".py")]
         self.assertTrue(pys)
         with open(pys[0], errors="ignore") as fh:
@@ -496,13 +506,12 @@ class NativeTests(unittest.TestCase):
     def test_binary_decompiles_to_c_and_reports_provenance(self):
         if not native_engine_ready():
             self.skipTest("pinpoint CLI not installed")
-        elf = Fixtures.paths.get("elf")
-        if not elf:
-            self.skipTest("no ELF to test with")
-        env_note = os.environ.get("GHIDRA_INSTALL_DIR")
-        out = os.path.join(Fixtures.root, "out", "elf")
+        native = Fixtures.paths.get("native")
+        if not native:
+            self.skipTest("no native binary to test with")
+        out = os.path.join(Fixtures.root, "out", "native")
         shutil.rmtree(out, ignore_errors=True)
-        r = recover.recover_source(elf, out=out, timeout=900)
+        r = recover.recover_source(native, out=out, timeout=900)
         if not r.get("ok") and "decompiler" in (r.get("error") or ""):
             self.skipTest("no decompiler engine configured")
         self.assertTrue(r["ok"], r.get("error"))
@@ -637,15 +646,21 @@ class PortabilityTests(unittest.TestCase):
         return path
 
     def test_recovery_works_without_fcntl(self):
-        # Windows has no fcntl; the lock is an optimisation, never a requirement.
-        saved = recover._fcntl
-        recover._fcntl = None
+        # Neither lock backend is a requirement: recovery has to work with both
+        # of them missing, which is the worst case on an unknown platform.
+        saved = recover._fcntl, recover._msvcrt
+        recover._fcntl = recover._msvcrt = None
         try:
             r = recover.recover_source(Fixtures.paths["asar"], out=self.out("no_fcntl"))
         finally:
-            recover._fcntl = saved
+            recover._fcntl, recover._msvcrt = saved
         self.assertTrue(r["ok"], r.get("error"))
         self.assertGreaterEqual(r["source_files"], 3)
+
+    def test_a_lock_backend_exists_on_this_platform(self):
+        # POSIX has fcntl, Windows has msvcrt; a platform with neither is the
+        # only case where two concurrent runs can share an output tree.
+        self.assertTrue(recover._fcntl is not None or recover._msvcrt is not None)
 
     def test_pyc_magic_follows_the_python_version(self):
         # 3.7 bytecode with a 3.11 header is what silently broke pycdc before:

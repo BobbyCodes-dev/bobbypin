@@ -37,10 +37,14 @@ import sys
 import time
 import zipfile
 
-try:  # POSIX only; the lock is an optimisation, not a requirement
+try:  # POSIX advisory locks
     import fcntl as _fcntl
 except ImportError:  # pragma: no cover - Windows
     _fcntl = None
+try:  # Windows advisory locks
+    import msvcrt as _msvcrt
+except ImportError:  # pragma: no cover - POSIX
+    _msvcrt = None
 
 try:
     import bobbypin as bp
@@ -533,14 +537,21 @@ def recover_source(path, out=None, engine=None, force=False, timeout=DEFAULT_TIM
     # with sharing rules that a second handle on it breaks. The kernel drops the
     # lock when the process dies, so there is no stale state to clean up.
     handle = None
-    if _fcntl is not None:
+    if _fcntl is not None or _msvcrt is not None:
         import hashlib
         import tempfile
         key = hashlib.sha1(out.encode("utf-8", "surrogateescape")).hexdigest()[:16]
         lock_path = os.path.join(tempfile.gettempdir(), f"bobbypin-recover-{key}.lock")
         try:
             handle = open(lock_path, "a+b")
-            _fcntl.flock(handle.fileno(), _fcntl.LOCK_EX | _fcntl.LOCK_NB)
+            if handle.seek(0, os.SEEK_END) == 0:
+                handle.write(b"\0")      # msvcrt needs a byte to lock
+                handle.flush()
+            if _fcntl is not None:
+                _fcntl.flock(handle.fileno(), _fcntl.LOCK_EX | _fcntl.LOCK_NB)
+            else:
+                handle.seek(0)
+                _msvcrt.locking(handle.fileno(), _msvcrt.LK_NBLCK, 1)
         except OSError:
             if handle:
                 handle.close()
@@ -552,7 +563,13 @@ def recover_source(path, out=None, engine=None, force=False, timeout=DEFAULT_TIM
     finally:
         if handle is not None:
             try:
-                _fcntl.flock(handle.fileno(), _fcntl.LOCK_UN)
+                if _fcntl is not None:
+                    _fcntl.flock(handle.fileno(), _fcntl.LOCK_UN)
+                else:
+                    handle.seek(0)
+                    _msvcrt.locking(handle.fileno(), _msvcrt.LK_UNLCK, 1)
+            except OSError:
+                pass
             finally:
                 handle.close()
 
