@@ -37,10 +37,14 @@ import sys
 import time
 import zipfile
 
-try:  # POSIX only; the lock is an optimisation, not a requirement
+try:  # POSIX advisory locks
     import fcntl as _fcntl
 except ImportError:  # pragma: no cover - Windows
     _fcntl = None
+try:  # Windows advisory locks
+    import msvcrt as _msvcrt
+except ImportError:  # pragma: no cover - POSIX
+    _msvcrt = None
 
 try:
     import bobbypin as bp
@@ -400,18 +404,46 @@ def _source_files(tree, exts=SOURCE_EXTS):
 
 
 def _run(argv, timeout, cwd=None, env=None):
+    """Run one engine. Always returns a dict; never raises, never hangs."""
+    # Windows cannot CreateProcess a .cmd/.bat shim directly, and jadx and npm
+    # both install as one. Everything else gets the plain argv.
+    if os.name == "nt" and argv and str(argv[0]).lower().endswith((".cmd", ".bat")):
+        argv = ["cmd", "/c", *argv]
     started = time.time()
+
+    def done(code, stdout="", stderr=""):
+        return {"code": code, "stdout": stdout, "stderr": stderr,
+                "duration_s": round(time.time() - started, 2)}
+
     try:
-        proc = subprocess.run(argv, capture_output=True, text=True, timeout=timeout,
-                              cwd=cwd, env=env)
-        return {"code": proc.returncode, "stdout": proc.stdout, "stderr": proc.stderr,
-                "duration_s": round(time.time() - started, 2)}
+        # A process group of its own, so a timeout can take the whole tree down:
+        # a .bat wrapper that spawns an interpreter will not die with its parent
+        # on Windows, and the pipes stay open until the grandchild exits.
+        proc = subprocess.Popen(argv, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                                text=True, cwd=cwd, env=env,
+                                creationflags=subprocess.CREATE_NEW_PROCESS_GROUP
+                                if os.name == "nt" else 0)
     except FileNotFoundError:
-        return {"code": 127, "stdout": "", "stderr": f"{argv[0]} not found",
-                "duration_s": round(time.time() - started, 2)}
+        return done(127, stderr=f"{argv[0]} not found")
+    except OSError as exc:
+        # Not executable, wrong architecture, no execute permission: an engine
+        # that cannot be launched is a reported error, never a traceback.
+        return done(126, stderr=f"cannot execute {argv[0]}: {exc.strerror or exc}")
+
+    try:
+        stdout, stderr = proc.communicate(timeout=timeout)
     except subprocess.TimeoutExpired:
-        return {"code": 124, "stdout": "", "stderr": f"timed out after {timeout}s",
-                "duration_s": round(time.time() - started, 2)}
+        if os.name == "nt":
+            subprocess.run(["taskkill", "/F", "/T", "/PID", str(proc.pid)],
+                           capture_output=True, check=False)
+        else:
+            proc.kill()
+        try:
+            proc.communicate(timeout=15)
+        except subprocess.TimeoutExpired:
+            pass
+        return done(124, stderr=f"timed out after {timeout}s")
+    return done(proc.returncode, stdout, stderr)
 
 
 def _result(path, out, kind_info, engine, **extra):
@@ -529,14 +561,21 @@ def recover_source(path, out=None, engine=None, force=False, timeout=DEFAULT_TIM
     # with sharing rules that a second handle on it breaks. The kernel drops the
     # lock when the process dies, so there is no stale state to clean up.
     handle = None
-    if _fcntl is not None:
+    if _fcntl is not None or _msvcrt is not None:
         import hashlib
         import tempfile
         key = hashlib.sha1(out.encode("utf-8", "surrogateescape")).hexdigest()[:16]
         lock_path = os.path.join(tempfile.gettempdir(), f"bobbypin-recover-{key}.lock")
         try:
             handle = open(lock_path, "a+b")
-            _fcntl.flock(handle.fileno(), _fcntl.LOCK_EX | _fcntl.LOCK_NB)
+            if handle.seek(0, os.SEEK_END) == 0:
+                handle.write(b"\0")      # msvcrt needs a byte to lock
+                handle.flush()
+            if _fcntl is not None:
+                _fcntl.flock(handle.fileno(), _fcntl.LOCK_EX | _fcntl.LOCK_NB)
+            else:
+                handle.seek(0)
+                _msvcrt.locking(handle.fileno(), _msvcrt.LK_NBLCK, 1)
         except OSError:
             if handle:
                 handle.close()
@@ -548,7 +587,13 @@ def recover_source(path, out=None, engine=None, force=False, timeout=DEFAULT_TIM
     finally:
         if handle is not None:
             try:
-                _fcntl.flock(handle.fileno(), _fcntl.LOCK_UN)
+                if _fcntl is not None:
+                    _fcntl.flock(handle.fileno(), _fcntl.LOCK_UN)
+                else:
+                    handle.seek(0)
+                    _msvcrt.locking(handle.fileno(), _msvcrt.LK_UNLCK, 1)
+            except OSError:
+                pass
             finally:
                 handle.close()
 

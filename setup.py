@@ -51,8 +51,22 @@ PINPOINT_RELEASE = (
     "/bobbypin-pinpoint-v1.0.0/bobbypin-pinpoint-1.0.0.tgz"
 )
 PINPOINT_PREFIX = os.path.join(os.path.expanduser("~"), "tools", "pinpoint-prefix")
-PINPOINT_ENV = os.path.join(os.path.expanduser("~"), ".config", "pinpoint-env.sh")
-PINPOINT_MARKER = "# >>> bobbypin setup: pinpoint analysis layer >>>"
+
+IS_WINDOWS = os.name == "nt"
+IS_MACOS = sys.platform == "darwin"
+IS_LINUX = sys.platform.startswith("linux")
+
+# The env file is shell syntax, so it follows the platform: PowerShell on
+# Windows, POSIX sh everywhere else. Both are written the same way, inside a
+# marked block, so re-running setup replaces its own lines and nothing else.
+if IS_WINDOWS:
+    PINPOINT_ENV = os.path.join(os.path.expanduser("~"), ".config", "pinpoint-env.ps1")
+    PINPOINT_MARKER = "# >>> bobbypin setup: pinpoint analysis layer >>>"
+    EXE_SUFFIX = ".exe"
+else:
+    PINPOINT_ENV = os.path.join(os.path.expanduser("~"), ".config", "pinpoint-env.sh")
+    PINPOINT_MARKER = "# >>> bobbypin setup: pinpoint analysis layer >>>"
+    EXE_SUFFIX = ""
 
 # ANSI only when a human is watching
 _TTY = sys.stdout.isatty() and os.environ.get("NO_COLOR") is None
@@ -84,6 +98,24 @@ def info(msg: str) -> None:
 
 def have(binary: str) -> bool:
     return shutil.which(binary) is not None
+
+
+def spawn(argv):
+    """argv that this platform can actually execute.
+
+    Windows cannot CreateProcess a .cmd/.bat shim, and npm and jadx both install
+    as exactly that, so those get wrapped in cmd.exe.
+    """
+    if IS_WINDOWS and argv and str(argv[0]).lower().endswith((".cmd", ".bat")):
+        return ["cmd", "/c", *argv]
+    return list(argv)
+
+
+def venv_python(venv_dir: str = VENV_DIR) -> str:
+    """Where a virtualenv keeps its interpreter, on this platform."""
+    if IS_WINDOWS:
+        return os.path.join(venv_dir, "Scripts", "python.exe")
+    return os.path.join(venv_dir, "bin", "python")
 
 
 def in_virtualenv() -> bool:
@@ -165,6 +197,13 @@ def ensure_capstone(args, want_frida: bool):
                 info("frida-tools not installed (only needed for live monitors)")
         return sys.executable
 
+    # A previous run may already have built the repo venv; --check must see it,
+    # otherwise it reports MISSING on a machine where everything works.
+    existing_venv = venv_python()
+    if os.path.exists(existing_venv) and capstone_importable(existing_venv):
+        ok(f"capstone available in {existing_venv}")
+        return existing_venv
+
     if args.check:
         bad("capstone not importable - run `python3 setup.py` to install it")
         return None
@@ -178,18 +217,18 @@ def ensure_capstone(args, want_frida: bool):
         # PEP 668: the distro python refuses installs. Own virtualenv instead of
         # fighting the system package manager.
         info("system interpreter is externally managed (PEP 668) - using a repo-local venv")
-        venv_python = os.path.join(VENV_DIR, "bin", "python")
-        if not os.path.exists(venv_python):
+        venv_python_path = venv_python()
+        if not os.path.exists(venv_python_path):
             code, out = run([sys.executable, "-m", "venv", VENV_DIR], timeout=300)
             if code != 0:
                 bad("could not create " + VENV_DIR)
                 info(out.strip().splitlines()[-1] if out.strip() else "no output")
                 return None
-        code, out = pip_install(venv_python, packages, user=False, break_system=False)
-        if code == 0 and capstone_importable(venv_python):
+        code, out = pip_install(venv_python_path, packages, user=False, break_system=False)
+        if code == 0 and capstone_importable(venv_python_path):
             ok("installed into " + VENV_DIR)
-            info("run bobbypin with: " + os.path.join(VENV_DIR, "bin", "python"))
-            return venv_python
+            info("run bobbypin with: " + venv_python_path)
+            return venv_python_path
         bad("capstone install failed in the venv")
         info((out.strip().splitlines() or ["no output"])[-1])
         return None
@@ -220,26 +259,73 @@ APT_DEPS = {
 SUDO_APT = "sudo apt-get update && sudo apt-get install -y qemu-system-x86 qemu-utils genisoimage"
 
 
-def check_system(args) -> dict:
-    step("System packages")
-    state = {"docker": have("docker"), "kvm_tools": True, "kvm_device": os.path.exists("/dev/kvm")}
+def _docker_state(state: dict) -> None:
+    """Is the docker daemon actually reachable? The CLI being installed is not enough."""
+    if not state["docker"]:
+        return
+    code, out = run(["docker", "info", "--format", "{{.ServerVersion}}"], timeout=60)
+    if code == 0:
+        ok("docker " + out.strip())
+        return
+    state["docker"] = False
+    bad("docker CLI present but the daemon is not reachable")
+    if IS_LINUX:
+        info("start it with: sudo systemctl enable --now docker")
+    elif IS_MACOS:
+        info("start Docker Desktop (or: colima start)")
+    else:
+        info("start Docker Desktop from the Start menu")
 
+
+def check_system(args) -> dict:
+    """What this machine can do. Linux gets the full answer; every other platform
+    gets its own, because a Windows or macOS install is a first-class install and
+    should not be told to run apt-get."""
+    step("System packages")
+    state = {"docker": have("docker"), "kvm_tools": False, "kvm_device": False,
+             "sandbox_backends": []}
+
+    if IS_WINDOWS or IS_MACOS:
+        # No /dev/kvm, no apt. Say what the platform supports and what to install.
+        state["kvm_device"] = os.path.exists("/dev/kvm")
+        if IS_MACOS:
+            info("macOS: the KVM backend does not exist here; the container backend does")
+            missing = [b for b in ("docker",) if not have(b)]
+            if missing:
+                warn("docker not installed - the container backend will be unavailable")
+                info("install with: brew install --cask docker   (or colima: brew install colima)")
+            else:
+                ok("docker present")
+        else:
+            info("Windows: the KVM backend does not exist here; the container backend does")
+            if not have("docker"):
+                warn("docker not installed - the container backend will be unavailable")
+                info("install Docker Desktop: winget install -e --id Docker.DockerDesktop")
+            else:
+                ok("docker present")
+        _docker_state(state)
+        state["sandbox_backends"] = ["docker"] if state["docker"] else []
+        if not state["sandbox_backends"]:
+            warn("no sandbox backend available: analysis, patching and source recovery "
+                 "all still work; only running an untrusted target is unavailable")
+        return state
+
+    state["kvm_device"] = os.path.exists("/dev/kvm")
     missing = [pkg for binary, pkg in APT_DEPS.items() if not have(binary)]
     if missing:
-        state["kvm_tools"] = False
         bad("missing: " + ", ".join(missing))
         info("install with: " + SUDO_APT)
         if args.install_system_packages and not args.check:
             info("running it for you (sudo may prompt) ...")
-            code, out = run(
+            code, _out = run(
                 ["sudo", "apt-get", "install", "-y", *sorted(set(missing))],
                 timeout=1800, capture=False,
             )
             if code == 0:
                 ok("system packages installed")
-                state["kvm_tools"] = all(have(b) for b in APT_DEPS)
     else:
         ok("qemu, qemu-img and genisoimage present")
+    state["kvm_tools"] = all(have(b) for b in APT_DEPS)
 
     if not state["kvm_device"]:
         warn("/dev/kvm is missing - hardware virtualisation is off in firmware, or "
@@ -247,18 +333,13 @@ def check_system(args) -> dict:
     else:
         ok("/dev/kvm present")
 
-    if state["docker"]:
-        code, out = run(["docker", "info", "--format", "{{.ServerVersion}}"], timeout=30)
-        if code == 0:
-            ok("docker " + out.strip())
-        else:
-            state["docker"] = False
-            bad("docker CLI present but the daemon is not reachable")
-            info("start it with: sudo systemctl enable --now docker")
-    else:
+    _docker_state(state)
+    if not state["docker"]:
         warn("docker not installed - the container backend will be unavailable")
         info("install with: curl -fsSL https://get.docker.com | sh")
-
+    state["sandbox_backends"] = [b for b, up in (("docker", state["docker"]),
+                                                 ("kvm", state["kvm_device"] and state["kvm_tools"]))
+                                  if up]
     return state
 
 
@@ -359,6 +440,10 @@ def provision_guest(args, system) -> bool:
     if args.no_vm:
         warn("skipped (--no-vm)")
         return False
+    if not IS_LINUX:
+        info("skipped - the KVM guest backend is Linux-only; the container backend covers "
+             "this platform (and analysis does not need either)")
+        return False
     if not system.get("kvm_tools") or not system.get("kvm_device"):
         warn("skipped - qemu, genisoimage and /dev/kvm are required")
         info("the docker backend still works; re-run setup after installing them")
@@ -423,7 +508,12 @@ def verify(args, python: str) -> bool:
         else:
             warn(f"backend {name}: {backend.get('reason')}")
 
-    backend = "docker" if data.get("backends", {}).get("docker", {}).get("available") else "auto"
+    available = [name for name, b in (data.get("backends") or {}).items() if b.get("available")]
+    if not available:
+        warn("no sandbox backend on this machine: analysis, patching and source recovery "
+             "work; executing an untrusted target does not. Nothing else is affected.")
+        return True
+    backend = "docker" if "docker" in available else "auto"
     info(f"running a containment probe on the {backend} backend ...")
     code, out = run(
         [python, os.path.join(REPO, "bobbypin_ai.py"), "sandbox_run",
@@ -462,11 +552,24 @@ def _node_major() -> int | None:
     if exe is None:
         return None
     try:
-        out = subprocess.run([exe, "-p", "process.versions.node.split('.')[0]"],
+        out = subprocess.run(spawn([exe, "-p", "process.versions.node.split('.')[0]"]),
                              capture_output=True, text=True, timeout=20)
         return int(out.stdout.strip()) if out.returncode == 0 else None
     except (OSError, ValueError, subprocess.SubprocessError):
         return None
+
+
+def pinpoint_binary(prefix: str) -> str | None:
+    """Where npm put the CLI: <prefix>/bin on POSIX, <prefix> itself on Windows."""
+    candidates = [os.path.join(prefix, "bin", "pinpoint")]
+    if IS_WINDOWS:
+        candidates = [os.path.join(prefix, "pinpoint.cmd"),
+                      os.path.join(prefix, "pinpoint.ps1"),
+                      os.path.join(prefix, "pinpoint")]
+    for path in candidates:
+        if os.path.isfile(path):
+            return path
+    return shutil.which("pinpoint")
 
 
 def _pinpoint_version(pinpoint: str) -> str | None:
@@ -486,29 +589,61 @@ def pinpoint_asset() -> str:
 
 
 def _find_ghidra() -> str | None:
+    """Ghidra, wherever this platform keeps it."""
     import glob
+    patterns = ["~/tools/ghidra_*", "~/ghidra_*", "/opt/ghidra_*",
+                "/usr/share/ghidra*", "/opt/homebrew/opt/ghidra",
+                "~/Applications/ghidra_*", "/Applications/ghidra_*"]
+    if IS_WINDOWS:
+        for var in ("USERPROFILE", "LOCALAPPDATA", "ProgramFiles", "ProgramFiles(x86)"):
+            base = os.environ.get(var)
+            if base:
+                patterns.extend([os.path.join(base, "ghidra_*"),
+                                 os.path.join(base, "tools", "ghidra_*")])
+    launchers = ("analyzeHeadless.bat", "analyzeHeadless") if IS_WINDOWS else ("analyzeHeadless",)
     candidates = []
-    for pattern in ("~/tools/ghidra_*", "/opt/ghidra_*", "/usr/share/ghidra*",
-                    "~/ghidra_*", "/opt/homebrew/opt/ghidra"):
+    for pattern in patterns:
         candidates.extend(sorted(glob.glob(os.path.expanduser(pattern)), reverse=True))
     for path in candidates:
-        if os.path.isfile(os.path.join(path, "support", "analyzeHeadless")):
-            return path
+        for launcher in launchers:
+            if os.path.isfile(os.path.join(path, "support", launcher)):
+                return path
     return None
 
 
 def _find_jdk21() -> str | None:
     import glob
-    for pattern in ("~/tools/jdk-21*", "/usr/lib/jvm/*21*", "/opt/*jdk*21*"):
+    patterns = ["~/tools/jdk-21*", "/usr/lib/jvm/*21*", "/opt/*jdk*21*",
+                "/opt/homebrew/opt/openjdk@21", "/opt/homebrew/opt/openjdk"]
+    if IS_MACOS:
+        patterns.append("/Library/Java/JavaVirtualMachines/*21*/Contents/Home")
+    if IS_WINDOWS:
+        for var in ("ProgramFiles", "ProgramFiles(x86)", "LOCALAPPDATA"):
+            base = os.environ.get(var)
+            if base:
+                patterns.extend([os.path.join(base, "*jdk*21*"),
+                                 os.path.join(base, "Eclipse Adoptium", "*21*"),
+                                 os.path.join(base, "Programs", "Eclipse Adoptium", "*21*")])
+    for pattern in patterns:
         for path in sorted(glob.glob(os.path.expanduser(pattern)), reverse=True):
-            if os.path.isfile(os.path.join(path, "bin", "java")):
+            java = os.path.join(path, "bin", "java" + (".exe" if IS_WINDOWS else ""))
+            if os.path.isfile(java):
                 return path
     return None
 
 
 def _find_jadx() -> str | None:
+    """The jadx CLI (a .bat shim on Windows) or a standalone jar."""
     import glob
-    for pattern in ("~/tools/jadx-headless-mcp*.jar", "/opt/jadx*/jadx-headless-mcp*.jar"):
+    found = shutil.which("jadx")
+    if found:
+        return found
+    patterns = ["~/tools/jadx-headless-mcp*.jar", "/opt/jadx*/jadx-headless-mcp*.jar"]
+    if IS_WINDOWS:
+        base = os.environ.get("USERPROFILE")
+        if base:
+            patterns.append(os.path.join(base, "tools", "jadx*"))
+    for pattern in patterns:
         hits = sorted(glob.glob(os.path.expanduser(pattern)), reverse=True)
         if hits:
             return hits[0]
@@ -544,37 +679,55 @@ def report_source_engines() -> None:
 
 
 def write_pinpoint_env(prefix: str) -> None:
-    """Rewrite the managed block in ~/.config/pinpoint-env.sh; leave the rest alone."""
+    """Rewrite the managed block in the platform's env file; leave the rest alone.
+
+    POSIX shells read pinpoint-env.sh, PowerShell reads pinpoint-env.ps1. The
+    values are collected once and rendered twice, so the Windows file cannot drift
+    from the Linux one.
+    """
     ghidra = _find_ghidra()
     jdk = _find_jdk21()
     jadx = _find_jadx()
     apktool = shutil.which("apktool")
     node_dir = os.path.dirname(shutil.which("node") or "")
-
-    body = [PINPOINT_MARKER,
-            "# written by bobbypin setup.py - re-run setup.py to refresh",
-            f'export PATH="{os.path.join(prefix, "bin")}:$PATH"']
-    if node_dir:
-        body.append(f'export PATH="{node_dir}:$PATH"')
-    if jdk:
-        body.append(f'export JAVA_HOME="{jdk}"')
-        body.append(f'export PATH="$JAVA_HOME/bin:$PATH"')
-    if ghidra:
-        body.append(f'export GHIDRA_INSTALL_DIR="{ghidra}"')
     dotnet_root = _find_dotnet()
+
+    prepend = [os.path.join(prefix, "bin")]
+    if node_dir:
+        prepend.append(node_dir)
+    if jdk:
+        prepend.append(os.path.join(jdk, "bin"))
     if dotnet_root:
-        body.append(f'export DOTNET_ROOT="{dotnet_root}"')
-        body.append(f'export PATH="{dotnet_root}/tools:{dotnet_root}:$PATH"')
+        prepend.extend([os.path.join(dotnet_root, "tools"), dotnet_root])
+
+    scalars = []
+    if jdk:
+        scalars.append(("JAVA_HOME", jdk))
+    if ghidra:
+        scalars.append(("GHIDRA_INSTALL_DIR", ghidra))
+    if dotnet_root:
+        scalars.append(("DOTNET_ROOT", dotnet_root))
     if jadx:
-        body.append(f'export PINPOINT_JADX_MCP_JAR="{jadx}"')
+        scalars.append(("PINPOINT_JADX_MCP_JAR", jadx))
     if apktool:
-        body.append(f'export PINPOINT_APKTOOL_COMMAND="{apktool}"')
+        scalars.append(("PINPOINT_APKTOOL_COMMAND", apktool))
     for name, binary in (("PINPOINT_TSHARK_COMMAND", "tshark"),
                          ("PINPOINT_CAPINFOS_COMMAND", "capinfos"),
                          ("PINPOINT_GDB_COMMAND", "gdb")):
         found = shutil.which(binary)
         if found:
-            body.append(f'export {name}="{found}"')
+            scalars.append((name, found))
+
+    body = [PINPOINT_MARKER,
+            "# written by bobbypin setup.py - re-run setup.py to refresh"]
+    if IS_WINDOWS:
+        for name, value in scalars:
+            body.append(f'$env:{name} = "{value}"')
+        body.append('$env:PATH = "' + ";".join(prepend) + ';$env:PATH"')
+    else:
+        for name, value in scalars:
+            body.append(f'export {name}="{value}"')
+        body.append(f'export PATH="{":".join(prepend)}:$PATH"')
     body.append("# <<< bobbypin setup: pinpoint analysis layer <<<")
 
     os.makedirs(os.path.dirname(PINPOINT_ENV), exist_ok=True)
@@ -582,8 +735,9 @@ def write_pinpoint_env(prefix: str) -> None:
     if os.path.isfile(PINPOINT_ENV):
         with open(PINPOINT_ENV, encoding="utf-8") as fh:
             existing = fh.read()
-    start = existing.find(PINPOINT_MARKER)
+    start_marker = PINPOINT_MARKER
     end_marker = "# <<< bobbypin setup: pinpoint analysis layer <<<"
+    start = existing.find(start_marker)
     if start != -1 and end_marker in existing:
         end = existing.find(end_marker, start) + len(end_marker)
         updated = existing[:start] + "\n".join(body) + existing[end:]
@@ -596,7 +750,7 @@ def write_pinpoint_env(prefix: str) -> None:
 
 def report_pinpoint_providers(pinpoint: str) -> list[str]:
     try:
-        out = subprocess.run([pinpoint, "capabilities", "--json"],
+        out = subprocess.run(spawn([pinpoint, "capabilities", "--json"]),
                              capture_output=True, text=True, timeout=180)
         if out.returncode != 0:
             return []
@@ -660,8 +814,8 @@ def ensure_pinpoint(args) -> bool:
         info(f"asset tried: {pinpoint_asset()}")
         return False
 
-    pinpoint = os.path.join(args.pinpoint_prefix, "bin", "pinpoint")
-    version = _pinpoint_version(pinpoint) if os.path.isfile(pinpoint) else None
+    pinpoint = pinpoint_binary(args.pinpoint_prefix)
+    version = _pinpoint_version(pinpoint) if pinpoint else None
     if not version:
         warn("pinpoint installed but did not run - check your node install")
         return False
@@ -747,7 +901,17 @@ def main(argv=None) -> int:
     verified = verify(args, python)
     summary(python, system, docker_ok, guest_ok, pinpoint_ok, verified)
 
-    healthy = bool(python) and (docker_ok or guest_ok)
+    # A working analysis toolchain is the definition of a successful install. The
+    # sandbox is a feature of the platform, not a prerequisite for installing: no
+    # Windows or macOS machine has /dev/kvm, and refusing to install there would be
+    # wrong. verify() already said what is missing.
+    healthy = bool(python)
+    if not (docker_ok or guest_ok):
+        if system.get("docker") or system.get("kvm_device"):
+            info("sandbox: backend present but not provisioned (re-run without --check)")
+        else:
+            info("sandbox: unavailable on this platform (analysis, patching and source "
+                 "recovery require none)")
     if args.check:
         return 0 if healthy else 1
     return 0 if (healthy and verified) else 1

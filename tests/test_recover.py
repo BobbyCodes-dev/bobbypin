@@ -62,17 +62,44 @@ def pyinstaller_skip_reason():
     return "pyinstaller could not build the fixture: " + Fixtures.paths.get("pyi_error", "unknown")
 
 
+def make_slow_engine(directory, name, seconds=30):
+    """An engine that hangs, as something this platform can actually execute.
+
+    PINPOINT_BIN wants a single path, so on Windows it is a .bat (which recover.py
+    wraps in cmd.exe) and elsewhere a shell script.
+    """
+    if os.name == "nt":
+        path = os.path.join(directory, name + ".bat")
+        with open(path, "w") as fh:
+            fh.write("@echo off\r\n"
+                     f'"{sys.executable}" -c "import time; time.sleep({seconds})"\r\n')
+    else:
+        path = os.path.join(directory, name + ".sh")
+        with open(path, "w") as fh:
+            fh.write("#!/bin/sh\nsleep %d\n" % seconds)
+        os.chmod(path, 0o755)
+    return path
+
+
 def native_engine_ready():
     """The tool's own resolution order, not just PATH: install.sh writes an env file."""
     return recover.pp is not None and recover.pp.find_cli() is not None
 
 
-def make_elf(directory):
-    """A real ELF: /bin/true if present, otherwise skipped by the caller."""
+def make_native(directory):
+    """A real native binary plus the kind this platform's format has.
+
+    /bin/true is ELF on Linux and Mach-O on macOS, so a test that hardcodes "elf"
+    is testing the laptop rather than the tool.
+    """
     for candidate in ("/bin/true", "/bin/echo"):
         if os.path.exists(candidate):
-            return candidate
-    return None
+            kind = "macho" if sys.platform == "darwin" else "elf"
+            return candidate, kind
+    pe = make_pe(directory)
+    if pe:
+        return pe, "pe"
+    return None, None
 
 
 def make_pe(directory, name="fixture.exe"):
@@ -180,7 +207,7 @@ class Fixtures:
     def build(cls):
         cls.root = tempfile.mkdtemp(prefix="bobbypin-recover-tests-")
         p = cls.paths
-        p["elf"] = make_elf(cls.root)
+        p["native"], p["native_kind"] = make_native(cls.root)
         p["pe"] = make_pe(cls.root)
         p["apk"] = make_apk(cls.root)
         p["apk_flutter"] = make_apk(cls.root, "flutter.apk", flutter=True)
@@ -205,7 +232,7 @@ class Fixtures:
                  "--distpath", out, "--workpath", os.path.join(cls.root, "pyi_build"),
                  os.path.join(src, "app.py")],
                 capture_output=True, text=True, timeout=900, cwd=cls.root)
-            candidate = os.path.join(out, "app")
+            candidate = os.path.join(out, "app.exe" if os.name == "nt" else "app")
             if run.returncode == 0 and os.path.exists(candidate):
                 p["pyi"] = candidate
             else:
@@ -237,7 +264,7 @@ class DetectionTests(unittest.TestCase):
             self.skipTest("pyinstaller not installed")
         info = recover.detect_kind(path)
         self.assertEqual(info["kind"], "pyinstaller")
-        self.assertIn(info.get("stub"), ("elf", "pe"))
+        self.assertIn(info.get("stub"), ("elf", "pe", "macho"))
         self.assertGreater(info.get("entries", 0), 0)
 
     def test_flutter_apk_is_flagged_as_dart(self):
@@ -328,7 +355,12 @@ class ContractTests(unittest.TestCase):
         self.assertIn("not a directory", r["error"])
 
     def test_unwritable_output_reports_and_does_not_raise(self):
-        r = recover.recover_source(Fixtures.paths["asar"], out="/proc/definitely-not-here")
+        # A path under a regular file cannot be created on any platform, which is
+        # what makes this portable: no /proc, no assumptions about permissions.
+        blocker = os.path.join(Fixtures.root, "blocker.bin")
+        open(blocker, "wb").close()
+        r = recover.recover_source(Fixtures.paths["asar"],
+                                   out=os.path.join(blocker, "child"))
         self.assertFalse(r["ok"])
         self.assertIn("output directory", r["error"])
         self.assertIn("remediation", r)
@@ -472,15 +504,17 @@ class PyInstallerTests(unittest.TestCase):
         path = Fixtures.paths.get("pyi")
         if not path:
             self.skipTest(pyinstaller_skip_reason())
-        fake = os.path.join(Fixtures.root, "fake-decompiler.sh")
-        with open(fake, "w") as fh:
-            fh.write('#!/bin/sh\necho "# recovered by the override"\necho "SENTINEL = 1"\n')
-        os.chmod(fake, 0o755)
+        # A shell script is not runnable on Windows, so drive the override with
+        # this interpreter: that is a valid command on every platform.
+        fake_script = os.path.join(Fixtures.root, "fake_decompiler.py")
+        with open(fake_script, "w") as fh:
+            fh.write('print("# recovered by the override")\nprint("SENTINEL = 1")\n')
+        fake = '"%s" "%s"' % (sys.executable, fake_script)
         out = os.path.join(Fixtures.root, "out", "pyi_override")
         shutil.rmtree(out, ignore_errors=True)
         r = recover.recover_source(path, out=out, pyc_decompiler=fake)
         self.assertTrue(r["ok"], r.get("error"))
-        self.assertIn("fake-decompiler", r["engine"])
+        self.assertIn(os.path.basename(sys.executable).replace(".exe", ""), r["engine"])
         pys = [p for p in walk(out) if p.endswith(".py")]
         self.assertTrue(pys)
         with open(pys[0], errors="ignore") as fh:
@@ -491,13 +525,12 @@ class NativeTests(unittest.TestCase):
     def test_binary_decompiles_to_c_and_reports_provenance(self):
         if not native_engine_ready():
             self.skipTest("pinpoint CLI not installed")
-        elf = Fixtures.paths.get("elf")
-        if not elf:
-            self.skipTest("no ELF to test with")
-        env_note = os.environ.get("GHIDRA_INSTALL_DIR")
-        out = os.path.join(Fixtures.root, "out", "elf")
+        native = Fixtures.paths.get("native")
+        if not native:
+            self.skipTest("no native binary to test with")
+        out = os.path.join(Fixtures.root, "out", "native")
         shutil.rmtree(out, ignore_errors=True)
-        r = recover.recover_source(elf, out=out, timeout=900)
+        r = recover.recover_source(native, out=out, timeout=900)
         if not r.get("ok") and "decompiler" in (r.get("error") or ""):
             self.skipTest("no decompiler engine configured")
         self.assertTrue(r["ok"], r.get("error"))
@@ -565,20 +598,24 @@ class EdgeCaseTests(unittest.TestCase):
                              for e in (".java", ".kt")))
         self.assertGreater(r["files"], r["source_files"])
 
+    def native_target(self):
+        for key in ("elf", "pe"):
+            if Fixtures.paths.get(key):
+                return Fixtures.paths[key]
+        return None
+
     def test_engine_timeout_is_reported_not_hung(self):
-        if recover.pp is None:
-            self.skipTest("analysis layer not importable")
-        stub = os.path.join(Fixtures.root, "slow-engine.sh")
-        with open(stub, "w") as fh:
-            fh.write("#!/bin/sh\nsleep 30\necho '{\"functions\": []}'\n")
-        os.chmod(stub, 0o755)
+        if recover.pp is None or not self.native_target():
+            self.skipTest("analysis layer or a native target is not available")
+        stub = make_slow_engine(Fixtures.root, "slow-engine", 30)
         saved = recover.pp.find_cli, getattr(recover.pp, "providers", None)
         recover.pp.find_cli = lambda: stub
         if saved[1] is not None:
             recover.pp.providers = lambda: {"available": ["ghidra"]}
         try:
             started = time.time()
-            r = recover.recover_source("/bin/true", out=self.out("timeout"), timeout=1)
+            r = recover.recover_source(self.native_target(), out=self.out("timeout"),
+                                       timeout=1)
             elapsed = time.time() - started
         finally:
             recover.pp.find_cli = saved[0]
@@ -589,16 +626,13 @@ class EdgeCaseTests(unittest.TestCase):
         self.assertLess(elapsed, 25, "timeout was not enforced")
 
     def test_two_processes_cannot_share_one_output_tree(self):
-        if recover.pp is None:
-            self.skipTest("analysis layer not importable")
-        stub = os.path.join(Fixtures.root, "slow-engine2.sh")
-        with open(stub, "w") as fh:
-            fh.write("#!/bin/sh\nsleep 4\necho '{\"functions\": []}'\n")
-        os.chmod(stub, 0o755)
+        if recover.pp is None or not self.native_target():
+            self.skipTest("analysis layer or a native target is not available")
+        stub = make_slow_engine(Fixtures.root, "slow-engine2", 4)
         out = self.out("crossproc")
         env = dict(os.environ, PINPOINT_BIN=stub)
         procs = [subprocess.Popen([sys.executable, os.path.join(REPO, "recover.py"),
-                                   "/bin/true", "--out", out, "--json"],
+                                   self.native_target(), "--out", out, "--json"],
                                   stdout=subprocess.PIPE, stderr=subprocess.PIPE,
                                   text=True, env=env) for _ in range(2)]
         results = []
@@ -625,15 +659,21 @@ class PortabilityTests(unittest.TestCase):
         return path
 
     def test_recovery_works_without_fcntl(self):
-        # Windows has no fcntl; the lock is an optimisation, never a requirement.
-        saved = recover._fcntl
-        recover._fcntl = None
+        # Neither lock backend is a requirement: recovery has to work with both
+        # of them missing, which is the worst case on an unknown platform.
+        saved = recover._fcntl, recover._msvcrt
+        recover._fcntl = recover._msvcrt = None
         try:
             r = recover.recover_source(Fixtures.paths["asar"], out=self.out("no_fcntl"))
         finally:
-            recover._fcntl = saved
+            recover._fcntl, recover._msvcrt = saved
         self.assertTrue(r["ok"], r.get("error"))
         self.assertGreaterEqual(r["source_files"], 3)
+
+    def test_a_lock_backend_exists_on_this_platform(self):
+        # POSIX has fcntl, Windows has msvcrt; a platform with neither is the
+        # only case where two concurrent runs can share an output tree.
+        self.assertTrue(recover._fcntl is not None or recover._msvcrt is not None)
 
     def test_pyc_magic_follows_the_python_version(self):
         # 3.7 bytecode with a 3.11 header is what silently broke pycdc before:
@@ -657,6 +697,30 @@ class PortabilityTests(unittest.TestCase):
         path = os.path.join(nested, "mod.pyc")
         open(path, "wb").close()
         self.assertEqual(recover._module_name(path, root), "pkg.sub.mod")
+
+
+class EngineLaunchTests(unittest.TestCase):
+    def test_an_engine_that_cannot_execute_is_a_manifest_error(self):
+        if recover.pp is None:
+            self.skipTest("analysis layer not importable")
+        broken = os.path.join(Fixtures.root, "not-an-executable")
+        with open(broken, "w") as fh:
+            fh.write("this is not a program\n")
+        os.chmod(broken, 0o644)
+        saved = recover.pp.find_cli, getattr(recover.pp, "providers", None)
+        recover.pp.find_cli = lambda: broken
+        if saved[1] is not None:
+            recover.pp.providers = lambda: {"available": ["ghidra"]}
+        try:
+            r = recover.recover_source(Fixtures.paths.get("native") or Fixtures.paths["asar"],
+                                       out=os.path.join(Fixtures.root, "out", "noexec"))
+        finally:
+            recover.pp.find_cli = saved[0]
+            if saved[1] is not None:
+                recover.pp.providers = saved[1]
+        self.assertFalse(r["ok"])
+        self.assertTrue(r.get("error"), "a launch failure must carry a reason")
+        self.assertIn("cannot execute", r["error"])
 
 
 class CliTests(unittest.TestCase):
@@ -767,7 +831,7 @@ def main():
         suite = unittest.TestSuite()
         for case in (DetectionTests, ContractTests, AsarTests, JarApkTests,
                      PyInstallerTests, NativeTests, EdgeCaseTests,
-                     PortabilityTests, CliTests, RealTargetTests):
+                     PortabilityTests, EngineLaunchTests, CliTests, RealTargetTests):
             suite.addTests(loader.loadTestsFromTestCase(case))
         result = unittest.TextTestRunner(verbosity=2).run(suite)
     finally:

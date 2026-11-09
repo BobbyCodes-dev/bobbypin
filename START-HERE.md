@@ -14,7 +14,11 @@ for you by the same command.
 ## 1. Install — one command
 
 ```bash
-./install.sh
+./install.sh          # Linux / macOS
+```
+
+```powershell
+.\install.ps1         # Windows (PowerShell)
 ```
 
 That is `python3 setup.py` with the repo as the working directory. It:
