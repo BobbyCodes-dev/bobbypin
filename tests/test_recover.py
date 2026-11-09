@@ -23,6 +23,7 @@ import subprocess
 import sys
 import tempfile
 import threading
+import time
 import unittest
 import zipfile
 
@@ -53,6 +54,19 @@ def which(name):
 # --------------------------------------------------------------------------
 # fixtures: built here so the suite does not depend on files outside the repo
 # --------------------------------------------------------------------------
+def pyinstaller_skip_reason():
+    if Fixtures.paths.get("pyi"):
+        return None
+    if not shutil.which("pyinstaller"):
+        return "pyinstaller not installed"
+    return "pyinstaller could not build the fixture: " + Fixtures.paths.get("pyi_error", "unknown")
+
+
+def native_engine_ready():
+    """The tool's own resolution order, not just PATH: install.sh writes an env file."""
+    return recover.pp is not None and recover.pp.find_cli() is not None
+
+
 def make_elf(directory):
     """A real ELF: /bin/true if present, otherwise skipped by the caller."""
     for candidate in ("/bin/true", "/bin/echo"):
@@ -194,6 +208,11 @@ class Fixtures:
             candidate = os.path.join(out, "app")
             if run.returncode == 0 and os.path.exists(candidate):
                 p["pyi"] = candidate
+            else:
+                # A broken pyinstaller (wrong HOME, missing module) is not the same
+                # as "not installed": the skip reason has to say what happened.
+                p["pyi_error"] = ((run.stderr or run.stdout or "").strip().splitlines()
+                                  or ["pyinstaller produced no output"])[-1][:200]
 
     @classmethod
     def cleanup(cls):
@@ -439,7 +458,7 @@ class PyInstallerTests(unittest.TestCase):
     def test_bundle_is_unpacked_with_pyz_modules(self):
         path = Fixtures.paths.get("pyi")
         if not path:
-            self.skipTest("pyinstaller not installed")
+            self.skipTest(pyinstaller_skip_reason())
         out = os.path.join(Fixtures.root, "out", "pyi")
         shutil.rmtree(out, ignore_errors=True)
         r = recover.recover_source(path, out=out)
@@ -452,7 +471,7 @@ class PyInstallerTests(unittest.TestCase):
     def test_decompiler_override_is_honoured(self):
         path = Fixtures.paths.get("pyi")
         if not path:
-            self.skipTest("pyinstaller not installed")
+            self.skipTest(pyinstaller_skip_reason())
         fake = os.path.join(Fixtures.root, "fake-decompiler.sh")
         with open(fake, "w") as fh:
             fh.write('#!/bin/sh\necho "# recovered by the override"\necho "SENTINEL = 1"\n')
@@ -470,7 +489,7 @@ class PyInstallerTests(unittest.TestCase):
 
 class NativeTests(unittest.TestCase):
     def test_binary_decompiles_to_c_and_reports_provenance(self):
-        if not which("pinpoint"):
+        if not native_engine_ready():
             self.skipTest("pinpoint CLI not installed")
         elf = Fixtures.paths.get("elf")
         if not elf:
@@ -491,7 +510,7 @@ class NativeTests(unittest.TestCase):
 
     def test_pe_symbols_survive(self):
         pe = Fixtures.paths.get("pe")
-        if not pe or not which("pinpoint"):
+        if not pe or not native_engine_ready():
             self.skipTest("no mingw PE fixture or no pinpoint")
         out = os.path.join(Fixtures.root, "out", "pe")
         shutil.rmtree(out, ignore_errors=True)
@@ -507,6 +526,94 @@ class NativeTests(unittest.TestCase):
                         if line.startswith("// name:"):
                             names.append(line.split(":", 1)[1].strip())
         self.assertIn("license_check", names)
+
+
+class EdgeCaseTests(unittest.TestCase):
+    def out(self, name):
+        path = os.path.join(Fixtures.root, "out", name)
+        shutil.rmtree(path, ignore_errors=True)
+        return path
+
+    def test_paths_with_spaces_and_unicode(self):
+        src = os.path.join(Fixtures.root, "space and ünïcode target.asar")
+        shutil.copy(Fixtures.paths["asar"], src)
+        out = self.out("weird name out")
+        r = recover.recover_source(src, out=out)
+        self.assertTrue(r["ok"], r.get("error"))
+        self.assertTrue(os.path.exists(os.path.join(out, "main.js")))
+
+    def test_symlink_to_target(self):
+        link = os.path.join(Fixtures.root, "link.asar")
+        if os.path.lexists(link):
+            os.remove(link)
+        os.symlink(Fixtures.paths["asar"], link)
+        r = recover.recover_source(link, out=self.out("symlink"))
+        self.assertTrue(r["ok"], r.get("error"))
+
+    def test_source_files_excludes_resources(self):
+        apk = make_zip(Fixtures.root, "withres.apk", {
+            "AndroidManifest.xml": b"<manifest/>",
+            "classes.dex": b"dex\n035\0",
+            "res/drawable/icon.png": b"\x89PNG",
+        })
+        if not which("jadx"):
+            self.skipTest("jadx not installed")
+        out = self.out("withres")
+        r = recover.recover_source(apk, out=out)
+        self.assertEqual(r["source_files"],
+                         sum(r["by_extension"].get(e, 0)
+                             for e in (".java", ".kt")))
+        self.assertGreater(r["files"], r["source_files"])
+
+    def test_engine_timeout_is_reported_not_hung(self):
+        if recover.pp is None:
+            self.skipTest("analysis layer not importable")
+        stub = os.path.join(Fixtures.root, "slow-engine.sh")
+        with open(stub, "w") as fh:
+            fh.write("#!/bin/sh\nsleep 30\necho '{\"functions\": []}'\n")
+        os.chmod(stub, 0o755)
+        saved = recover.pp.find_cli, getattr(recover.pp, "providers", None)
+        recover.pp.find_cli = lambda: stub
+        if saved[1] is not None:
+            recover.pp.providers = lambda: {"available": ["ghidra"]}
+        try:
+            started = time.time()
+            r = recover.recover_source("/bin/true", out=self.out("timeout"), timeout=1)
+            elapsed = time.time() - started
+        finally:
+            recover.pp.find_cli = saved[0]
+            if saved[1] is not None:
+                recover.pp.providers = saved[1]
+        self.assertFalse(r["ok"])
+        self.assertIn("timed out", (r.get("error") or "").lower())
+        self.assertLess(elapsed, 25, "timeout was not enforced")
+
+    def test_two_processes_cannot_share_one_output_tree(self):
+        if recover.pp is None:
+            self.skipTest("analysis layer not importable")
+        stub = os.path.join(Fixtures.root, "slow-engine2.sh")
+        with open(stub, "w") as fh:
+            fh.write("#!/bin/sh\nsleep 4\necho '{\"functions\": []}'\n")
+        os.chmod(stub, 0o755)
+        out = self.out("crossproc")
+        env = dict(os.environ, PINPOINT_BIN=stub)
+        procs = [subprocess.Popen([sys.executable, os.path.join(REPO, "recover.py"),
+                                   "/bin/true", "--out", out, "--json"],
+                                  stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                                  text=True, env=env) for _ in range(2)]
+        results = []
+        for proc in procs:
+            stdout, stderr = proc.communicate(timeout=120)
+            try:
+                results.append(json.loads(stdout))
+            except ValueError:
+                results.append({"ok": False, "error": stderr[:200]})
+        errors = [r.get("error", "") for r in results]
+        locked = [e for e in errors if "another recovery run" in e]
+        # Exactly one process may hold the output tree. The other one is refused,
+        # whatever the winner goes on to do with its engine.
+        self.assertEqual(len(locked), 1, errors)
+        self.assertEqual(sum(1 for e in errors if "another recovery run" not in e), 1, errors)
 
 
 class CliTests(unittest.TestCase):
@@ -601,13 +708,23 @@ class RealTargetTests(unittest.TestCase):
         self.assertEqual(changed, [], f"targets changed on disk: {changed}")
 
 
+def setUpModule():
+    """Also lets `python -m unittest tests.test_recover` and pytest discovery work."""
+    Fixtures.build()
+
+
+def tearDownModule():
+    Fixtures.cleanup()
+
+
 def main():
     Fixtures.build()
     try:
         loader = unittest.TestLoader()
         suite = unittest.TestSuite()
         for case in (DetectionTests, ContractTests, AsarTests, JarApkTests,
-                     PyInstallerTests, NativeTests, CliTests, RealTargetTests):
+                     PyInstallerTests, NativeTests, EdgeCaseTests, CliTests,
+                     RealTargetTests):
             suite.addTests(loader.loadTestsFromTestCase(case))
         result = unittest.TextTestRunner(verbosity=2).run(suite)
     finally:
