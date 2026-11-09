@@ -109,6 +109,11 @@ Real runs, on real artifacts:
 - An 11 MB native Windows binary: **one `.c` per function**, 20 to 140 s depending on size
 - A .NET assembly: **95 `.cs` and a `.csproj` in 2 s**
 
+The recovery layer has 34 tests that build their own fixtures and skip engines
+that are not installed: `python3 tests/test_recover.py`. Point it at real
+artifacts with `BOBBYPIN_REAL_TARGETS=targets.json` and every one is recovered
+and re-hashed to prove it was not written to.
+
 `ok` means source files came back, not that a subprocess exited 0. A run that
 writes only its engine's index reports failure. Packed targets (`upx0`, `.vmp0`,
 `.themida`) say so instead of presenting the unpacker stub as the program, and a

@@ -97,6 +97,7 @@ pinpoint.py              bridge from bobbypin to the pinpoint analysis layer
 pinpoint/                the deep-analysis component (Ghidra / jadx / apktool / pwntools)
 setup.py                 one-command installer
 install.sh               ./install.sh wrapper around setup.py
+tests/test_recover.py    the recovery suite: fixtures, contracts, real targets
 AGENTS.md                AI operating manual
 target/AUTHORIZATION.md  standing scope
 start-here               this file

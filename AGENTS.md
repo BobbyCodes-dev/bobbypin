@@ -528,6 +528,36 @@ updating the manifest.
 
 ---
 
+## Tests
+
+The recovery layer has a suite that builds its own fixtures, so it runs on any
+machine without Bobby's artifact collection:
+
+```bash
+python3 tests/test_recover.py                     # 34 tests, ~50 s
+BOBBYPIN_REAL_TARGETS=targets.json python3 tests/test_recover.py   # + real artifacts
+```
+
+A `targets.json` is `{"label": "/absolute/path"}`. Every configured artifact is
+recovered, checked for source files, and re-hashed afterwards: a target that
+changed on disk fails the run. Engine tests skip themselves (with a reason) when
+the tool is absent, so a clean machine reports `OK (skipped=N)` instead of noise.
+
+What the suite pins down, and what to keep true when editing `recover.py`:
+
+- every detected kind names itself correctly, and a PyInstaller stub is never
+  reported as the PE/ELF it looks like
+- `ok` requires source files, never just a written index
+- `--engine` refuses a kind it cannot read, and says which engines can
+- missing engines produce the error plus the install line, never a silent no-op
+- an output path that is a file, an unwritable directory, a read-only parent and
+  an unreadable target all return a manifest instead of raising
+- two concurrent runs into one output tree cannot interleave
+- a `.asar` comes back byte-identical; a Flutter APK says its logic is Dart AOT
+- a JAR with no readable classes is a failure, not a success
+
+---
+
 ## Hard rules
 
 - Never write patches into the source file (`dst` must differ from `src`

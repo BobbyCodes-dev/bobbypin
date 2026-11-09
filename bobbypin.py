@@ -869,9 +869,13 @@ def main():
                          "C pseudocode for native. Writes a source tree, patches nothing")
     ap.add_argument("--recover-out", metavar="DIR", help="with --recover: output directory")
     ap.add_argument("--recover-engine", metavar="NAME",
-                    help="with --recover: force an engine (ilspycmd, jadx, asar, ghidra)")
+                    help="with --recover: force an engine (ilspycmd, jadx, asar, "
+                         "pyinstaller, ghidra); it must be able to read the target kind")
     ap.add_argument("--recover-force", action="store_true",
                     help="with --recover: write into a non-empty output directory")
+    ap.add_argument("--recover-pyc-decompiler", metavar="CMD",
+                    help="with --recover: command that prints source for a .pyc "
+                         "(default pycdc; use {pyc} as the placeholder)")
     args = ap.parse_args()
 
     if not args.skip_deps:
@@ -890,12 +894,15 @@ def main():
     if args.recover:
         from recover import recover_source
         result = recover_source(args.file, out=args.recover_out,
-                                engine=args.recover_engine, force=args.recover_force)
+                                engine=args.recover_engine, force=args.recover_force,
+                                pyc_decompiler=args.recover_pyc_decompiler)
         if args.json:
             print(json.dumps(result, indent=2))
         elif result.get("ok"):
             print(f"recovered {result['files']} file(s) into {result['output_dir']}")
             print(f"  engine   : {result['engine']} ({result['kind']})")
+            if result.get("source_files") is not None:
+                print(f"  source   : {result['source_files']} code file(s)")
             if result.get("languages"):
                 print(f"  languages: {', '.join(result['languages'])}")
             for note in result.get("notes") or []:
