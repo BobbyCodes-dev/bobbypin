@@ -876,7 +876,29 @@ def main():
     ap.add_argument("--recover-pyc-decompiler", metavar="CMD",
                     help="with --recover: command that prints source for a .pyc "
                          "(default pycdc; use {pyc} as the placeholder)")
+    ap.add_argument("--baml", action="store_true",
+                    help="recover editable XAML from the compiled BAML streams inside a "
+                         ".NET/WPF assembly (needs ilspycmd). Writes .xaml files, "
+                         "patches nothing")
+    ap.add_argument("--baml-out", metavar="DIR",
+                    help="with --baml: output directory (default: <name>_xaml)")
     args = ap.parse_args()
+
+    # No dependency check on this path: it needs ilspycmd, not capstone, and the
+    # prompt would be noise for a command that only reads a managed assembly.
+    if args.baml:
+        if not args.file:
+            ap.error("--baml needs a path to a managed .dll")
+        from baml_to_xaml import main as baml_main
+        baml_argv = [args.file]
+        if args.baml_out:
+            baml_argv += ["-o", args.baml_out]
+        else:
+            baml_argv += ["-o", os.path.splitext(args.file)[0] + "_xaml"]
+        if args.json:
+            baml_argv.append("--json")
+        sys.exit(baml_main(baml_argv))
+
 
     if not args.skip_deps:
         ensure_deps(assume_yes=args.yes)

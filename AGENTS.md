@@ -92,7 +92,7 @@ reads structure. It never writes a byte of the target.
 
 | target kind | engine | you get |
 |---|---|---|
-| .NET assembly | `ilspycmd` | a decompiled C# project |
+| .NET assembly | `ilspycmd` | a decompiled C# project, plus every compiled WPF page as editable `.xaml` under `xaml/` |
 | Android `.apk`, Java `.jar` | `jadx` | Java sources plus resources |
 | Electron `.asar` | built in | the shipped JavaScript, exactly as shipped |
 | PyInstaller bundle | built in, `pycdc` optional | payload plus every module in the PYZ archive, non-stdlib `.pyc` turned back into `.py` |
@@ -120,6 +120,28 @@ silent no-op. Native recovery needs Ghidra; without it the answer says so and
 `disasm` still works.
 
 CLI: `python3 bobbypin.py target.apk --recover` (or `python3 recover.py target.apk`).
+
+### WPF screens: BAML to XAML
+
+A WPF app's `.xaml` pages are compiled to binary **BAML** and hidden inside the
+assembly's `<AssemblyName>.g.resources` container, which the C# export does not
+touch. `baml_to_xaml.py` drives the same `ilspycmd` once per stream and writes the
+pages back out as editable markup.
+
+```
+python3 bobbypin.py App.dll --baml                 # -> App_xaml/, mirroring resource paths
+python3 bobbypin.py App.dll --baml --baml-out ui    # choose the folder
+python3 bobbypin.py App.dll --baml --json           # bobbypin envelope
+python3 baml_to_xaml.py App.dll --list              # what is embedded, extract nothing
+python3 baml_to_xaml.py App.dll --resource "App.g.resources/mainwindow.baml"
+```
+
+`recover_source` on a .NET assembly runs this pass itself and reports `wpf_xaml`
+plus a note, so one command returns the code and the screens. An assembly with no
+BAML streams is reported as a failure with the reason (not a WPF app, or a
+single-file bundle whose `.dll` has to be located first) — never as an empty
+success. `App.g.resources/views/mainwindow.baml` becomes `views/mainwindow.xaml`;
+only `.baml` entries are decompiled, and the assembly is only ever read.
 
 ### pinpoint — deep analysis for formats we cannot patch (optional, beta)
 

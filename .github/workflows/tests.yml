@@ -41,6 +41,11 @@ jobs:
       - name: Recovery suite
         run: python tests/test_recover.py
 
+      # Stub engine, so this needs no .NET SDK: it proves the mapping, the file
+      # layout, the failure reporting and the documented --baml flag.
+      - name: BAML to XAML suite
+        run: python tests/test_baml_to_xaml.py
+
       - name: Installer report (does not fail the job)
         continue-on-error: true
         run: python setup.py --check
