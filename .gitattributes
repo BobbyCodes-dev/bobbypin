@@ -1,0 +1,4 @@
+# Build output of the vendored analysis layer. The installer installs
+# vendor/bobbypin-pinpoint-1.0.0.tgz, so shipping the un-packed JS as well would
+# only add megabytes to every download (GitHub's ZIP included).
+pinpoint/dist export-ignore
