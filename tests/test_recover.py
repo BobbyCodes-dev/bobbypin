@@ -616,6 +616,49 @@ class EdgeCaseTests(unittest.TestCase):
         self.assertEqual(sum(1 for e in errors if "another recovery run" not in e), 1, errors)
 
 
+class PortabilityTests(unittest.TestCase):
+    """The parts that could differ on Windows, tested here instead of hoped for."""
+
+    def out(self, name):
+        path = os.path.join(Fixtures.root, "out", name)
+        shutil.rmtree(path, ignore_errors=True)
+        return path
+
+    def test_recovery_works_without_fcntl(self):
+        # Windows has no fcntl; the lock is an optimisation, never a requirement.
+        saved = recover._fcntl
+        recover._fcntl = None
+        try:
+            r = recover.recover_source(Fixtures.paths["asar"], out=self.out("no_fcntl"))
+        finally:
+            recover._fcntl = saved
+        self.assertTrue(r["ok"], r.get("error"))
+        self.assertGreaterEqual(r["source_files"], 3)
+
+    def test_pyc_magic_follows_the_python_version(self):
+        # 3.7 bytecode with a 3.11 header is what silently broke pycdc before:
+        # the magic has to track the version, not a constant.
+        self.assertEqual(recover._pyc_header((3, 7))[:2], (3394).to_bytes(2, "little"))
+        self.assertEqual(recover._pyc_header((3, 11))[:2], (3495).to_bytes(2, "little"))
+        self.assertEqual(recover._pyc_header((3, 13))[:2], (3571).to_bytes(2, "little"))
+        # an unknown future version still yields a syntactically valid header
+        self.assertEqual(recover._pyc_header((3, 99))[2:4], b"\r\n")
+
+    def test_python_version_reads_the_stub_not_just_the_cookie(self):
+        self.assertEqual(recover._python_version(b"...python37.dll...", 37), (3, 7))
+        self.assertEqual(recover._python_version(b"...python311.dll...", 311), (3, 11))
+        self.assertEqual(recover._python_version(b"nothing here", 307), (3, 7))
+        self.assertIsNone(recover._python_version(b"nothing here", 0))
+
+    def test_nested_pyz_module_names_use_dots(self):
+        root = tempfile.mkdtemp(dir=Fixtures.root)
+        nested = os.path.join(root, "_pyz", "pkg", "sub")
+        os.makedirs(nested)
+        path = os.path.join(nested, "mod.pyc")
+        open(path, "wb").close()
+        self.assertEqual(recover._module_name(path, root), "pkg.sub.mod")
+
+
 class CliTests(unittest.TestCase):
     def test_json_success(self):
         out = os.path.join(Fixtures.root, "out", "cli_json")
@@ -723,8 +766,8 @@ def main():
         loader = unittest.TestLoader()
         suite = unittest.TestSuite()
         for case in (DetectionTests, ContractTests, AsarTests, JarApkTests,
-                     PyInstallerTests, NativeTests, EdgeCaseTests, CliTests,
-                     RealTargetTests):
+                     PyInstallerTests, NativeTests, EdgeCaseTests,
+                     PortabilityTests, CliTests, RealTargetTests):
             suite.addTests(loader.loadTestsFromTestCase(case))
         result = unittest.TextTestRunner(verbosity=2).run(suite)
     finally:
