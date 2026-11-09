@@ -346,6 +346,11 @@ def detect_kind(path: str) -> dict:
             names = []
         if any(n == "AndroidManifest.xml" for n in names):
             out["kind"] = "apk"
+            # Flutter apps carry their logic as Dart AOT in libapp.so: there is
+            # no Java worth reading, and saying "2 .java files recovered" without
+            # saying why would be a lie of omission.
+            if any(os.path.basename(n) in ("libflutter.so", "libapp.so") for n in names):
+                out["dart_aot"] = True
         elif any(n.startswith("META-INF/") for n in names) or any(n.endswith(".class") for n in names):
             out["kind"] = "jar"
         else:
@@ -426,7 +431,8 @@ def _result(path, out, kind_info, engine, **extra):
     return payload
 
 
-def recover_source(path, out=None, engine=None, force=False, timeout=DEFAULT_TIMEOUT) -> dict:
+def recover_source(path, out=None, engine=None, force=False, timeout=DEFAULT_TIMEOUT,
+                   pyc_decompiler=None) -> dict:
     """Recover a source tree from `path`. Returns a manifest, never raises for
     the expected failure modes (missing file, missing engine, bad output path)."""
     if not path:
@@ -507,7 +513,7 @@ def recover_source(path, out=None, engine=None, force=False, timeout=DEFAULT_TIM
     elif kind == "asar":
         recover = lambda: _recover_asar(path, out, kind_info, timeout)
     elif kind == "pyinstaller":
-        recover = lambda: _recover_pyinstaller(path, out, kind_info, timeout)
+        recover = lambda: _recover_pyinstaller(path, out, kind_info, timeout, pyc_decompiler)
     elif kind in ("pe", "elf", "macho"):
         recover = lambda: _recover_native(path, out, kind_info, timeout)
     else:
@@ -613,6 +619,12 @@ def _recover_with_jadx(path, out, kind_info, timeout) -> dict:
              "obfuscated but control flow is intact",
              "XML/manifest/assets from the archive are written alongside the code "
              "(decoded where jadx can decode them)"]
+    if kind_info.get("dart_aot"):
+        notes.insert(0, "this APK is a Flutter app: the app's own logic is Dart AOT "
+                        "compiled into libapp.so, not Java. What came back is the thin "
+                        "Java wrapper (activity, plugins, manifest) around it. Recovering "
+                        "the Dart code needs a Dart snapshot extractor, not a Java "
+                        "decompiler; the .so is in resources/ if you want to take it further")
     if failed:
         notes.append(f"{failed} of {by_ext.get('.java', 0)} .java file(s) could not be fully "
                      "decompiled by jadx; they keep a stub with the original signatures")
@@ -620,6 +632,7 @@ def _recover_with_jadx(path, out, kind_info, timeout) -> dict:
                    files=tree["files"], source_files=source_files, by_extension=by_ext,
                    languages=tree["languages"], sample=tree["sample"],
                    duration_s=run["duration_s"], decompile_failures=failed,
+                   dart_aot=bool(kind_info.get("dart_aot")),
                    error=None if ok else (run["stderr"] or run["stdout"]).strip()[-1500:],
                    notes=notes)
 
@@ -654,12 +667,51 @@ def _module_name(pyc_path, root):
     return rel[:-4].replace("/", ".") if rel.endswith(".pyc") else rel
 
 
-def _recover_pyinstaller(path, out, kind_info, timeout) -> dict:
+def _pyc_decompiler(explicit=None):
+    """A decompiler command for .pyc files, or None.
+
+    pycdc's bytecode range is narrower than the versions PyInstaller ships, and
+    no single decompiler covers every Python release. The command can be
+    overridden with `pyc_decompiler=` or BOBBYPIN_PYC_DECOMPILER, using `{pyc}`
+    as the placeholder for the file (`{py}`, `{out}` are accepted too).
+    """
+    candidates = [explicit, os.environ.get("BOBBYPIN_PYC_DECOMPILER")]
+    for cmd in candidates:
+        if cmd:
+            return cmd
+    for name in ("pycdc", "decompyle3", "uncompyle6"):
+        found = _which(name)
+        if found:
+            return found
+    return None
+
+
+def _run_pyc_decompiler(command, pyc_path, out_path, timeout=300):
+    """Run one decompiler over one .pyc. Returns (source, error)."""
+    import shlex
+    if "{pyc}" in command or "{out}" in command or "{py}" in command:
+        argv = shlex.split(command.format(pyc=pyc_path, out=out_path, py=sys.executable))
+        run = _run(argv, timeout)
+        if run["code"] == 0 and run["stdout"].strip():
+            return run["stdout"], None
+        if os.path.exists(out_path):
+            body = open(out_path, encoding="utf-8", errors="replace").read()
+            if body.strip():
+                return body, None
+        return None, (run["stderr"] or run["stdout"]).strip()[-400:] or "no output"
+    run = _run(shlex.split(command) + [pyc_path], timeout)
+    if run["code"] == 0 and run["stdout"].strip():
+        return run["stdout"], None
+    return None, (run["stderr"] or run["stdout"]).strip()[-400:] or "no output"
+
+
+def _recover_pyinstaller(path, out, kind_info, timeout, pyc_decompiler=None) -> dict:
     with open(path, "rb") as fh:
         data = fh.read()
     written, version, _cookie_pyver, pyz_count = _unpack_pyinstaller(data, out)
-    decompiler = _which("pycdc")
+    decompiler = _pyc_decompiler(pyc_decompiler)
     decompiled = skipped_stdlib = failed = 0
+    first_failure = None
     py_label = f"{version[0]}.{version[1]}" if version else None
     notes = [f"PyInstaller bundle: {len(written)} payload file(s) extracted"
              + (f", {pyz_count} module(s) unpacked from the PYZ archive" if pyz_count else "")
@@ -677,28 +729,37 @@ def _recover_pyinstaller(path, out, kind_info, timeout) -> dict:
                 skipped_stdlib += 1
                 continue
             dst = src[:-4] + ".py"
-            run = _run([decompiler, src], timeout=300)
-            if run["code"] == 0 and run["stdout"].strip():
+            source, why = _run_pyc_decompiler(decompiler, src, dst)
+            if source:
                 with open(dst, "w", encoding="utf-8") as fh:
-                    fh.write(run["stdout"])
+                    fh.write(source)
                 decompiled += 1
             else:
                 failed += 1
-        notes.append(f"{decompiled} .pyc file(s) turned back into .py with pycdc"
+                if failed == 1 and why:
+                    first_failure = why
+        notes.append(f"{decompiled} .pyc file(s) turned back into .py with "
+                     + os.path.basename(str(decompiler).split()[0])
                      + (f" ({skipped_stdlib} stdlib module(s) left as .pyc)" if skipped_stdlib else "")
                      + (f", {failed} failed" if failed else ""))
+        if failed and first_failure:
+            notes.append("first decompiler error: " + " ".join(first_failure.split())[:200])
         if pycs and decompiled == 0:
-            notes.append("pycdc could not read these code objects"
+            notes.append("the decompiler could not read these code objects"
                          + (f" (built by Python {py_label})" if py_label else "")
                          + ": its supported bytecode range is narrower than the bundle's. "
-                           "The .pyc files are intact and complete, so try a decompiler "
-                           "matching that Python version (decompyle3 / uncompyle6 for 3.x, "
-                           "pycdc from git for the newest).")
+                           "The .pyc files are intact and complete, so point the tool at one "
+                           "that matches: BOBBYPIN_PYC_DECOMPILER='decompyle3' or "
+                           "recover.py --pyc-decompiler <command> (use {pyc} as the placeholder).")
     else:
-        notes.append("install pycdc (Decompyle++) to turn the .pyc bytecode back into .py")
+        notes.append("install pycdc (Decompyle++) to turn the .pyc bytecode back into .py, or "
+                     "set BOBBYPIN_PYC_DECOMPILER / --pyc-decompiler to any command that "
+                     "prints source for a .pyc")
     tree = _count_tree(out)
     ok = tree["files"] > 0
-    return _result(path, out, kind_info, "pyinstaller" + ("+pycdc" if decompiler else ""),
+    engine_name = "pyinstaller" + ("+" + os.path.basename(str(decompiler).split()[0])
+                                   if decompiler else "")
+    return _result(path, out, kind_info, engine_name,
                    ok=ok, files=tree["files"], source_files=_source_files(tree, {".py"}),
                    by_extension=tree["by_extension"],
                    languages=tree["languages"], sample=tree["sample"], duration_s=0,
@@ -766,14 +827,22 @@ def main(argv=None) -> int:
                "  python3 recover.py app.exe --engine ghidra --json\n")
     ap.add_argument("file")
     ap.add_argument("--out", metavar="DIR", help="output directory (default: <name>_src next to the target)")
-    ap.add_argument("--engine", help="force an engine: ilspycmd, jadx, asar, pycdc, ghidra")
+    ap.add_argument("--engine",
+                    help="force an engine; must be able to read the detected kind: "
+                         "ilspycmd (.NET), jadx (.apk/.jar), asar (Electron), "
+                         "pyinstaller/pycdc (PyInstaller), ghidra (PE/ELF/Mach-O)")
     ap.add_argument("--force", action="store_true", help="write into a non-empty output directory")
     ap.add_argument("--timeout", type=int, default=DEFAULT_TIMEOUT)
+    ap.add_argument("--pyc-decompiler", metavar="CMD",
+                    help="PyInstaller only: command that prints source for a .pyc "
+                         "(default: pycdc, then decompyle3, then uncompyle6). "
+                         "Use {pyc} as the placeholder for the file")
     ap.add_argument("--json", action="store_true", help="machine-readable manifest")
     args = ap.parse_args(argv)
 
     result = recover_source(args.file, out=args.out, engine=args.engine,
-                            force=args.force, timeout=args.timeout)
+                            force=args.force, timeout=args.timeout,
+                            pyc_decompiler=args.pyc_decompiler)
     if args.json:
         print(json.dumps(result, indent=2))
     else:
@@ -786,6 +855,8 @@ def main(argv=None) -> int:
         else:
             print(f"recovered {result['files']} file(s) into {result['output_dir']}")
             print(f"  engine   : {result['engine']} ({result['kind']})")
+            if result.get("source_files") is not None:
+                print(f"  source   : {result['source_files']} code file(s)")
             if result.get("languages"):
                 print(f"  languages: {', '.join(result['languages'])}")
             for note in result.get("notes") or []:
