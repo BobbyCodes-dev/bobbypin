@@ -62,6 +62,25 @@ def pyinstaller_skip_reason():
     return "pyinstaller could not build the fixture: " + Fixtures.paths.get("pyi_error", "unknown")
 
 
+def make_slow_engine(directory, name, seconds=30):
+    """An engine that hangs, as something this platform can actually execute.
+
+    PINPOINT_BIN wants a single path, so on Windows it is a .bat (which recover.py
+    wraps in cmd.exe) and elsewhere a shell script.
+    """
+    if os.name == "nt":
+        path = os.path.join(directory, name + ".bat")
+        with open(path, "w") as fh:
+            fh.write("@echo off\r\n"
+                     f'"{sys.executable}" -c "import time; time.sleep({seconds})"\r\n')
+    else:
+        path = os.path.join(directory, name + ".sh")
+        with open(path, "w") as fh:
+            fh.write("#!/bin/sh\nsleep %d\n" % seconds)
+        os.chmod(path, 0o755)
+    return path
+
+
 def native_engine_ready():
     """The tool's own resolution order, not just PATH: install.sh writes an env file."""
     return recover.pp is not None and recover.pp.find_cli() is not None
@@ -245,7 +264,7 @@ class DetectionTests(unittest.TestCase):
             self.skipTest("pyinstaller not installed")
         info = recover.detect_kind(path)
         self.assertEqual(info["kind"], "pyinstaller")
-        self.assertIn(info.get("stub"), ("elf", "pe"))
+        self.assertIn(info.get("stub"), ("elf", "pe", "macho"))
         self.assertGreater(info.get("entries", 0), 0)
 
     def test_flutter_apk_is_flagged_as_dart(self):
@@ -588,10 +607,7 @@ class EdgeCaseTests(unittest.TestCase):
     def test_engine_timeout_is_reported_not_hung(self):
         if recover.pp is None or not self.native_target():
             self.skipTest("analysis layer or a native target is not available")
-        stub = os.path.join(Fixtures.root, "slow-engine.sh")
-        with open(stub, "w") as fh:
-            fh.write("#!/bin/sh\nsleep 30\necho '{\"functions\": []}'\n")
-        os.chmod(stub, 0o755)
+        stub = make_slow_engine(Fixtures.root, "slow-engine", 30)
         saved = recover.pp.find_cli, getattr(recover.pp, "providers", None)
         recover.pp.find_cli = lambda: stub
         if saved[1] is not None:
@@ -612,10 +628,7 @@ class EdgeCaseTests(unittest.TestCase):
     def test_two_processes_cannot_share_one_output_tree(self):
         if recover.pp is None or not self.native_target():
             self.skipTest("analysis layer or a native target is not available")
-        stub = os.path.join(Fixtures.root, "slow-engine2.sh")
-        with open(stub, "w") as fh:
-            fh.write("#!/bin/sh\nsleep 4\necho '{\"functions\": []}'\n")
-        os.chmod(stub, 0o755)
+        stub = make_slow_engine(Fixtures.root, "slow-engine2", 4)
         out = self.out("crossproc")
         env = dict(os.environ, PINPOINT_BIN=stub)
         procs = [subprocess.Popen([sys.executable, os.path.join(REPO, "recover.py"),
@@ -684,6 +697,30 @@ class PortabilityTests(unittest.TestCase):
         path = os.path.join(nested, "mod.pyc")
         open(path, "wb").close()
         self.assertEqual(recover._module_name(path, root), "pkg.sub.mod")
+
+
+class EngineLaunchTests(unittest.TestCase):
+    def test_an_engine_that_cannot_execute_is_a_manifest_error(self):
+        if recover.pp is None:
+            self.skipTest("analysis layer not importable")
+        broken = os.path.join(Fixtures.root, "not-an-executable")
+        with open(broken, "w") as fh:
+            fh.write("this is not a program\n")
+        os.chmod(broken, 0o644)
+        saved = recover.pp.find_cli, getattr(recover.pp, "providers", None)
+        recover.pp.find_cli = lambda: broken
+        if saved[1] is not None:
+            recover.pp.providers = lambda: {"available": ["ghidra"]}
+        try:
+            r = recover.recover_source(Fixtures.paths.get("native") or Fixtures.paths["asar"],
+                                       out=os.path.join(Fixtures.root, "out", "noexec"))
+        finally:
+            recover.pp.find_cli = saved[0]
+            if saved[1] is not None:
+                recover.pp.providers = saved[1]
+        self.assertFalse(r["ok"])
+        self.assertTrue(r.get("error"), "a launch failure must carry a reason")
+        self.assertIn("cannot execute", r["error"])
 
 
 class CliTests(unittest.TestCase):
@@ -794,7 +831,7 @@ def main():
         suite = unittest.TestSuite()
         for case in (DetectionTests, ContractTests, AsarTests, JarApkTests,
                      PyInstallerTests, NativeTests, EdgeCaseTests,
-                     PortabilityTests, CliTests, RealTargetTests):
+                     PortabilityTests, EngineLaunchTests, CliTests, RealTargetTests):
             suite.addTests(loader.loadTestsFromTestCase(case))
         result = unittest.TextTestRunner(verbosity=2).run(suite)
     finally:

@@ -417,6 +417,12 @@ def _run(argv, timeout, cwd=None, env=None):
     except FileNotFoundError:
         return {"code": 127, "stdout": "", "stderr": f"{argv[0]} not found",
                 "duration_s": round(time.time() - started, 2)}
+    except OSError as exc:
+        # Not executable, wrong architecture, no execute permission: an engine
+        # that cannot be launched is a reported error, never a traceback.
+        return {"code": 126, "stdout": "",
+                "stderr": f"cannot execute {argv[0]}: {exc.strerror or exc}",
+                "duration_s": round(time.time() - started, 2)}
     except subprocess.TimeoutExpired:
         return {"code": 124, "stdout": "", "stderr": f"timed out after {timeout}s",
                 "duration_s": round(time.time() - started, 2)}
