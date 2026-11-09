@@ -400,6 +400,10 @@ def _source_files(tree, exts=SOURCE_EXTS):
 
 
 def _run(argv, timeout, cwd=None, env=None):
+    # Windows cannot CreateProcess a .cmd/.bat shim directly, and jadx and npm
+    # both install as one. Everything else gets the plain argv.
+    if os.name == "nt" and argv and str(argv[0]).lower().endswith((".cmd", ".bat")):
+        argv = ["cmd", "/c", *argv]
     started = time.time()
     try:
         proc = subprocess.run(argv, capture_output=True, text=True, timeout=timeout,

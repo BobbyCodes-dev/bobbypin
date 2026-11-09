@@ -326,6 +326,12 @@ Real command output for all of the above is in [sandbox/SMOKE.md](sandbox/SMOKE.
 |---|---|
 | **Bundle** (everything inside, no registry lookup) | `tar -xzf bobbypin-bundle-v1.0.0.tar.gz && cd bobbypin && ./install.sh` |
 | **Git** | `git clone https://github.com/BobbyCodes-dev/bobbypin.git && cd bobbypin && ./install.sh` |
+| **Windows** | `Expand-Archive bobbypin-bundle-v1.0.0.zip .; cd bobbypin; .\install.ps1` |
+
+Linux, macOS and Windows are all supported and tested on all three in CI. The
+KVM guest backend is Linux-only by nature; everywhere else the container backend
+is used, and on a machine with neither, analysis, patching and source recovery
+still install and work. Only running an untrusted target needs a backend.
 | **Zip** | [bobbypin.bobbycodes.dev/dl/bcd](https://bobbypin.bobbycodes.dev/dl/bcd), then `./install.sh` |
 
 `./install.sh` checks Python, installs `capstone` (into a repo-local `.venv` when

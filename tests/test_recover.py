@@ -205,7 +205,7 @@ class Fixtures:
                  "--distpath", out, "--workpath", os.path.join(cls.root, "pyi_build"),
                  os.path.join(src, "app.py")],
                 capture_output=True, text=True, timeout=900, cwd=cls.root)
-            candidate = os.path.join(out, "app")
+            candidate = os.path.join(out, "app.exe" if os.name == "nt" else "app")
             if run.returncode == 0 and os.path.exists(candidate):
                 p["pyi"] = candidate
             else:
@@ -328,7 +328,12 @@ class ContractTests(unittest.TestCase):
         self.assertIn("not a directory", r["error"])
 
     def test_unwritable_output_reports_and_does_not_raise(self):
-        r = recover.recover_source(Fixtures.paths["asar"], out="/proc/definitely-not-here")
+        # A path under a regular file cannot be created on any platform, which is
+        # what makes this portable: no /proc, no assumptions about permissions.
+        blocker = os.path.join(Fixtures.root, "blocker.bin")
+        open(blocker, "wb").close()
+        r = recover.recover_source(Fixtures.paths["asar"],
+                                   out=os.path.join(blocker, "child"))
         self.assertFalse(r["ok"])
         self.assertIn("output directory", r["error"])
         self.assertIn("remediation", r)
@@ -565,9 +570,15 @@ class EdgeCaseTests(unittest.TestCase):
                              for e in (".java", ".kt")))
         self.assertGreater(r["files"], r["source_files"])
 
+    def native_target(self):
+        for key in ("elf", "pe"):
+            if Fixtures.paths.get(key):
+                return Fixtures.paths[key]
+        return None
+
     def test_engine_timeout_is_reported_not_hung(self):
-        if recover.pp is None:
-            self.skipTest("analysis layer not importable")
+        if recover.pp is None or not self.native_target():
+            self.skipTest("analysis layer or a native target is not available")
         stub = os.path.join(Fixtures.root, "slow-engine.sh")
         with open(stub, "w") as fh:
             fh.write("#!/bin/sh\nsleep 30\necho '{\"functions\": []}'\n")
@@ -578,7 +589,8 @@ class EdgeCaseTests(unittest.TestCase):
             recover.pp.providers = lambda: {"available": ["ghidra"]}
         try:
             started = time.time()
-            r = recover.recover_source("/bin/true", out=self.out("timeout"), timeout=1)
+            r = recover.recover_source(self.native_target(), out=self.out("timeout"),
+                                       timeout=1)
             elapsed = time.time() - started
         finally:
             recover.pp.find_cli = saved[0]
@@ -589,8 +601,8 @@ class EdgeCaseTests(unittest.TestCase):
         self.assertLess(elapsed, 25, "timeout was not enforced")
 
     def test_two_processes_cannot_share_one_output_tree(self):
-        if recover.pp is None:
-            self.skipTest("analysis layer not importable")
+        if recover.pp is None or not self.native_target():
+            self.skipTest("analysis layer or a native target is not available")
         stub = os.path.join(Fixtures.root, "slow-engine2.sh")
         with open(stub, "w") as fh:
             fh.write("#!/bin/sh\nsleep 4\necho '{\"functions\": []}'\n")
@@ -598,7 +610,7 @@ class EdgeCaseTests(unittest.TestCase):
         out = self.out("crossproc")
         env = dict(os.environ, PINPOINT_BIN=stub)
         procs = [subprocess.Popen([sys.executable, os.path.join(REPO, "recover.py"),
-                                   "/bin/true", "--out", out, "--json"],
+                                   self.native_target(), "--out", out, "--json"],
                                   stdout=subprocess.PIPE, stderr=subprocess.PIPE,
                                   text=True, env=env) for _ in range(2)]
         results = []
