@@ -907,8 +907,11 @@ def main(argv=None) -> int:
     # wrong. verify() already said what is missing.
     healthy = bool(python)
     if not (docker_ok or guest_ok):
-        info("sandbox: unavailable on this platform (analysis, patching and source "
-             "recovery are installed and work)")
+        if system.get("docker") or system.get("kvm_device"):
+            info("sandbox: backend present but not provisioned (re-run without --check)")
+        else:
+            info("sandbox: unavailable on this platform (analysis, patching and source "
+                 "recovery require none)")
     if args.check:
         return 0 if healthy else 1
     return 0 if (healthy and verified) else 1
