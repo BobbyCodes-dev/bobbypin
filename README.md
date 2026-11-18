@@ -196,8 +196,10 @@ same finding. Served on `127.0.0.1:8877`.
 Inside the AI layer, two calls exist so an agent stops guessing. `route` picks the
 playbook from what the file actually is (`pe_native`, `dotnet`, `asar`, `apk`, and so on)
 and returns the call sequence with the real paths filled in. `guidance` searches this
-manual and returns the one section that answers a question. Neither opens a
-disassembler, so both are safe to call first.
+manual and returns the one section that answers a question. `workflow` renders a whole
+job (crack a licence, defeat anti-debug, prove a patch, compare builds, recover source) as
+the ordered calls with your paths in them. None of the three opens a disassembler, so all
+are safe to call first.
 
 <br>
 

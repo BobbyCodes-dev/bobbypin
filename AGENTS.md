@@ -133,6 +133,33 @@ Every non-stopword query word has to appear in a section to match it, and a sect
 holds the whole query in its own text outranks one that only holds it across subsections.
 `read` returns the complete section, subsections included.
 
+## Get the job as a sequence
+
+`route` says what the file is. `workflow` says what the finished job looks like, with your
+own paths already in the payloads:
+
+```bash
+python3 bobbypin_ai.py workflow '{"action": "list"}'
+python3 bobbypin_ai.py workflow '{"id": "crack_licence", "path": "/abs/target.exe", "failure": "Invalid licence key"}'
+python3 bobbypin_ai.py workflow '{"id": "prove_patch", "orig": "/abs/a.exe", "new": "/abs/a_patched.exe"}'
+```
+
+| id | job | requires |
+|---|---|---|
+| `crack_licence` | find the branch behind the "not licensed" message and patch a copy | `path`, `failure`?, `out`? |
+| `bypass_login` | the same loop against an activation or auth branch | `path`, `failure`?, `out`? |
+| `defeat_antidebug` | detect the checks, patch the forceable ones, prove they stopped firing | `path`, `out`? |
+| `prove_patch` | compare bytes, run both builds in the boundary, report the difference | `orig`, `new` |
+| `compare_builds` | byte diff plus recovered structure between two versions | `old`, `new` |
+| `recover_source` | read structure and write a tree, patching nothing | `path`, `out`? |
+
+Each render returns `steps[]` (the exact calls, in order), `checks[]` (what proves the
+job), `stop_if[]` (the only grounds for stopping without an artifact) and `text` (the same
+sequence as prose). Rendering inspects nothing, so it is safe before you have touched the
+target and cheap after a context loss.
+
+`route` already names the workflow that fits the kind it detected, in `data.workflow`.
+
 ---
 
 ## Interfaces
@@ -168,6 +195,7 @@ Human GUI (if the user prefers clicking): `python3 bobbypin_gui.py 8877`
 |---|---|---|
 | `route` | `path` | kind, `route`, job, `first_command`, the full `steps[]` with exact payloads, `stop_if`, `do_not`, and the patched path when the route ends in an artifact |
 | `guidance` | `query` or `locator` or `action: list` | ranked manual sections with locators, or one whole section |
+| `workflow` | `id` plus its required arguments | the job as ordered `steps[]` with your paths in the payloads, `checks[]`, `stop_if[]`, and a prose `text` render; `{"action":"list"}` lists the ids |
 
 ### PE / native binary commands
 
