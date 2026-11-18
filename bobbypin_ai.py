@@ -140,6 +140,22 @@ def _err(cmd, msg):
     return {"ok": False, "cmd": cmd, "error": msg}
 
 
+def _pick(args, *names):
+    """First non-empty value among several accepted key spellings.
+
+    `patch` historically wanted `src`/`dst` while every other command in this layer
+    says `path`/`out`, and `verify` wanted `orig`/`new`. An agent calling the shape it
+    just used for `triage` got a bare "need src, dst" and stopped, reporting the tool
+    as broken instead of the call. Accept both spellings rather than making the caller
+    memorise two vocabularies.
+    """
+    for name in names:
+        value = args.get(name)
+        if value:
+            return value
+    return None
+
+
 def _pe(path):
     data = open(path, "rb").read()
     pe = bp.parse_pe(data)
@@ -216,8 +232,10 @@ def cmd_help(_args):
             "bytes": '{"path":"...","offset":"0xdef","len":8} -> raw bytes at offset',
             "plan": '{"path":"..."} -> triage + candidates + top strings in one call',
             "patch": '{"src":"...","dst":"...","patches":[{"offset":"0xdef","mode":"nop"}]} '
-                     "-> applies nop|flip|byte:<hex>, writes dst, reports per-patch result",
-            "verify": '{"orig":"...","new":"..."} -> byte-level diff summary',
+                     "-> applies nop|flip|byte:<hex>, writes dst, reports per-patch result "
+                     "(aliases: path/target for src, out for dst)",
+            "verify": '{"orig":"...","new":"..."} -> byte-level diff summary '
+                      "(aliases: src/path for orig, dst/out for new)",
             "asar_repack": '{"orig":"...","out":"...","mods":{"/asar/path":"local/file"}} '
                            '-> repack ASAR with file replacements, updates per-file integrity hashes',
             "electron_plan": '{"asar":"path/to/app.asar"} '
@@ -239,7 +257,10 @@ def cmd_help(_args):
                                'plan.skipped with the reason instead of guessed at. '
                                'verify:true runs the original and the patched copy in the '
                                'boundary against a simulated debugger and reports the '
-                               'difference - neutralised, still_fires, or nothing_to_prove.',
+                               'difference - neutralised, still_fires, or nothing_to_prove. '
+                               'When nothing is auto-patchable it does not stop there: '
+                               'data.manual_candidates and data.suggested_next carry the '
+                               'FAIL guards to flip by hand with patch.',
             "sandbox_preflight": "{} -> isolation backends on this host, what is missing, "
                                  "what it would take to fix it",
             "sandbox_run": '{"target":"...","backend":"auto|docker|kvm","argv":["wine","/in/app.exe"],'
@@ -486,8 +507,8 @@ def cmd_antidebug_patch(args):
     `trip_debug` - a debugger state simulated - and reports the difference. A patch that
     did not change what the target does is not a patch.
     """
-    path = args.get("path") or args.get("target")
-    out = args.get("out")
+    path = _pick(args, "path", "target", "src")
+    out = _pick(args, "out", "dst", "output")
     if not path:
         return _err("antidebug_patch", "need path")
     if not out:
@@ -503,7 +524,35 @@ def cmd_antidebug_patch(args):
         return _err("antidebug_patch", res.get("error") or "patch failed")
     if args.get("verify") and res.get("status") == "patched":
         res["verification"] = _verify_patch(path, out, args)
+    if res.get("status") == "nothing_patchable":
+        res["manual_candidates"] = _manual_candidates(path)
+        res["suggested_next"] = [
+            "nothing auto-patchable: every detected check is class B/C/D/E "
+            "(data.plan.skipped has the class and reason for each). This is not the end "
+            "of the job and no file was written yet.",
+            'pick the guard that controls the message you care about from '
+            'data.manual_candidates (or run candidates), then apply it by hand: '
+            'patch {"path": <target>, "out": <patched copy>, '
+            '"patches": [{"offset": "<jcc_off>", "mode": "flip"}]}',
+            'confirm the copy differs only where you meant: verify {"orig": <target>, '
+            '"new": <patched copy>} and read data.regions_changed',
+        ]
     return {"ok": True, "cmd": "antidebug_patch", "data": res}
+
+
+def _manual_candidates(path, limit=10):
+    """Shortlist of fails to patch by hand when nothing auto-patches.
+
+    `nothing_patchable` is honest - it means no check's verdict can be forced - but to a
+    calling agent it reads as "job over", and the run then stops with no artifact. The
+    manual path still works: find the conditional jump that guards the message, flip it
+    in a copy, verify the diff. Hand back the shortlist so that path is one call away.
+    """
+    try:
+        res = cmd_candidates({"path": path})
+    except Exception:
+        return []
+    return (res.get("data") or [])[:limit]
 
 
 def _verify_patch(orig, patched, args):
@@ -716,9 +765,12 @@ def cmd_plan(args):
 
 
 def cmd_patch(args):
-    src, dst, patches = args.get("src"), args.get("dst"), args.get("patches")
+    src = _pick(args, "src", "path", "target", "orig")
+    dst = _pick(args, "dst", "out", "output", "new")
+    patches = args.get("patches")
     if not src or not dst or not isinstance(patches, list) or not patches:
-        return _err("patch", 'need src, dst, patches:[{"offset":"0x..","mode":"nop|flip|byte:AABB"}]')
+        return _err("patch", 'need src, dst, patches:[{"offset":"0x..","mode":"nop|flip|byte:AABB"}]'
+                             ' - aliases accepted: path/target for src, out for dst')
     if src == dst:
         return _err("patch", "refusing: dst must differ from src")
     data = open(src, "rb").read()
@@ -757,9 +809,10 @@ def cmd_patch(args):
 
 
 def cmd_verify(args):
-    a, b = args.get("orig"), args.get("new")
+    a = _pick(args, "orig", "src", "path", "target", "a")
+    b = _pick(args, "new", "dst", "out", "output", "b")
     if not a or not b:
-        return _err("verify", "need orig + new")
+        return _err("verify", "need orig + new - aliases accepted: src/path for orig, dst/out for new")
     da, db = open(a, "rb").read(), open(b, "rb").read()
     if len(da) != len(db):
         return {"ok": True, "cmd": "verify",
