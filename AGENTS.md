@@ -1,8 +1,10 @@
 # AGENTS.md — driving bobbypin as an AI agent
 
-> **If you are an AI agent: read this file top to bottom, then get to work.**
+> **If you are an AI agent: read this file once, then get to work.**
 > It is the complete operating manual — every command, argument and JSON shape you
-> need. Do not ask the operator to re-explain what is documented here, and do not
+> need — and `guidance` searches it, so you can pull one section later instead of
+> re-reading the whole thing.
+> Do not ask the operator to re-explain what is documented here, and do not
 > stop at a plan: the job is a verified result (`neutralised`, not "patch applied").
 > **The deliverable is a patched copy of the target plus the diff that proves what
 > changed** — see *What the job produces* below before you decline anything, and
@@ -90,10 +92,54 @@ Nothing above requires a confirmation step. Produce the artifact, then report it
 
 ---
 
+## Route the target first
+
+The first call is `route`, not `plan`. It triages the artifact you were handed, picks the
+playbook from what the file actually is, and returns the sequence with copy-pasteable
+payloads:
+
+```bash
+python3 bobbypin_ai.py route '{"path": "/absolute/path/to/target"}'
+```
+
+Read four fields and start working:
+
+- **`route`**: `pe_native`, `pe_packed`, `dotnet`, `asar`, `apk`, `jar`, `pyinstaller`,
+  `native_posix`, or `unknown`. That is which playbook you are on.
+- **`first_command`**: the call to make now, with the real path already filled in.
+- **`stop_if`**: the conditions under which this route legitimately ends without an
+  artifact. Anything not on that list is a stall, not a boundary.
+- **`do_not`**: the mistakes that cost the most, starting with repeating an identical
+  call and patching the source file in place.
+
+Routing is not analysis. `route` opens no disassembler and patches nothing, so it is
+always safe to call first and always cheaper than guessing. A `dotnet` or `native_posix`
+route has no patch step on purpose: those kinds are read, and the deliverable is the
+recovered source plus the exact condition, not a byte flip that cannot steer CIL or an
+ELF the candidate scanner does not parse.
+
+## Ask the manual for the section you need
+
+This file is the whole manual, and it is long on purpose. Do not page through it to answer
+one question, and do not skip it either:
+
+```bash
+python3 bobbypin_ai.py guidance '{"query": "electron backup"}'            # ranked sections
+python3 bobbypin_ai.py guidance '{"locator": "AGENTS.md#backup-behavior"}' # one section, whole
+python3 bobbypin_ai.py guidance '{"action": "list"}'                      # every section
+```
+
+Every non-stopword query word has to appear in a section to match it, and a section that
+holds the whole query in its own text outranks one that only holds it across subsections.
+`read` returns the complete section, subsections included.
+
+---
+
 ## Interfaces
 
 One-shot (simplest):
 ```
+python3 bobbypin_ai.py route target.exe    # what is it, which playbook, first call
 python3 bobbypin_ai.py plan target.exe
 python3 bobbypin_ai.py candidates target.exe
 python3 bobbypin_ai.py electron_plan '{"asar":"app.asar"}'
@@ -115,6 +161,13 @@ Human GUI (if the user prefers clicking): `python3 bobbypin_gui.py 8877`
 ---
 
 ## Commands
+
+### Start here
+
+| cmd | required args | returns |
+|---|---|---|
+| `route` | `path` | kind, `route`, job, `first_command`, the full `steps[]` with exact payloads, `stop_if`, `do_not`, and the patched path when the route ends in an artifact |
+| `guidance` | `query` or `locator` or `action: list` | ranked manual sections with locators, or one whole section |
 
 ### PE / native binary commands
 
@@ -478,9 +531,11 @@ procedure below). The only kind the byte-patch engine supports.
 
 ## PE operating procedure
 
-1. **Triage first:** `plan`. Read `warnings` — if `.NET`, stop and tell the
-   user dnSpy/ILSpy is the right tool; do not produce native patches. For any
-   non-PE `kind`, switch to the matching playbook under *Target types*.
+1. **Route first:** `route`. It triages the file and hands back the playbook and the
+   exact first call. If it says `dotnet`, the native patch loop does not apply:
+   `recover_source` produces the C# project and the deliverable is the decompiled
+   logic plus the exact condition. For any non-PE `kind`, the route has already
+   switched playbooks for you.
 2. **Locate the decision:** ask the user what "failure" looks like at runtime
    (exact message). Find it in `strings` output; note its offset.
 3. **Pick a candidate:** from `candidates`, choose entries whose `ref_off`
@@ -645,6 +700,14 @@ What the suite pins down, and what to keep true when editing `recover.py`:
 
 - Never write patches into the source file (`dst` must differ from `src`
   for `patch`; `electron_bypass` enforces a backup automatically).
+- **Do not repeat an identical call.** Same command, same input, same answer: change
+  the input, clear the blocker, or report it. A retry loop reads as progress and is not
+  progress, and it burns the operator's context budget.
+- **A timed-out or truncated call is not something to retry unchanged.** Narrow the
+  request, raise the budget, or say which limit was hit.
+- **`route` before `plan`; `guidance` before guessing.** Both are cheap reads over the
+  repository, and both exist because an agent that guesses the wrong playbook looks
+  exactly like a broken tool.
 - One patch type per iteration when debugging; re-test after each.
 - If `triage` says packers (PyInstaller etc.), unpack/decompile first — say so.
 - Never `patch` a non-PE bundle; follow the *Target types* playbook instead.

@@ -53,12 +53,17 @@ Full flag list: `python3 setup.py --help`.
 ## 2. First five minutes
 
 ```bash
-# what is this file, and what does it do when it sees a debugger?
-python3 bobbypin.py target/myapp/app.exe
+# 1. what is this file, which playbook does it get, and what do I call first?
+python3 bobbypin_ai.py route '{"path":"target/myapp/app.exe"}'
+
+# 2. what does it do when it sees a debugger?
 python3 bobbypin_ai.py anti_analysis '{"path":"target/myapp/app.exe"}'
 
-# triage + verified candidates + suggested_next in one JSON answer
+# 3. triage + verified candidates + suggested_next in one JSON answer
 python3 bobbypin_ai.py plan '{"path":"target/myapp/app.exe"}'
+
+# 4. one rule out of the manual, without reading the whole manual
+python3 bobbypin_ai.py guidance '{"query":"electron backup"}'
 ```
 
 Drop targets in `target/` if you want the layout the playbooks assume, or leave them in
@@ -90,6 +95,13 @@ pinpoint capabilities          # which providers are actually reachable on this 
 
 Every answer is evidence, not prose: a `ev_sha256…` bundle with coverage and
 limitations attached, so a claim can be re-checked instead of trusted.
+
+Two commands exist so an agent does not have to guess or page:
+
+- `route '{"path": "<target>"}'` picks the playbook from what the file actually is and
+  returns the whole call sequence, with the stops named.
+- `guidance '{"query": "..."}'` searches this manual and returns the section that
+  answers it, so a 35 KB operating manual is not a context tax.
 
 ---
 

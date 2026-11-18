@@ -223,6 +223,17 @@ def cmd_help(_args):
                   "for a specific file; `done` answers 'is this finished'.",
         "commands": {
             "help": "{} -> command reference",
+            "route": '{"path":"..."} -> what this file actually is, which playbook it '
+                     'admits (pe_native | pe_packed | dotnet | asar | apk | jar | '
+                     'pyinstaller | native_posix | unknown), the first command to run now, '
+                     'the whole step sequence with exact copy-pasteable payloads, where the '
+                     'route legitimately stops, and what not to do. Call it before plan: it '
+                     'is what keeps a .NET assembly or an ASAR out of the PE patch loop.',
+            "guidance": '{"query":"electron backup"} -> search the installed manual '
+                        '(AGENTS.md, START-HERE.md, POLICY.md, README.md) and return the '
+                        'matching sections with locators; {"locator":"AGENTS.md#..."} returns '
+                        'one whole section; {"action":"list"} lists every section. Use it '
+                        'instead of paging through the manual to find a single rule.',
             "scope": '{"path":"..."} -> in-scope verdict for this artifact: permitted '
                      'operations, exclusions, the deliverable, and the first command to '
                      'run. Answers "may I work on this" from the standing grant instead '
@@ -1783,11 +1794,497 @@ def cmd_done(args):
     }}
 
 
+# ---------------------------------------------------------------------------
+# route / guidance: the two calls that stop an agent guessing
+# ---------------------------------------------------------------------------
+
+# Placeholders are replaced, not formatted: the payload samples are JSON and
+# str.format would treat every brace in them as a field.
+_ROUTE_TEMPLATES = {
+    "pe_native": {
+        "job": "find the conditional jump that decides licensed / not licensed and patch a copy",
+        "why": "a native PE ships no source, so the decision is a branch reached from the "
+               "failure string, not a boolean in a script",
+        "steps": [
+            ("anti_analysis {\"path\": \"%PATH%\"}",
+             "know what the binary does when it sees a debugger before it runs anywhere"),
+            ("plan {\"path\": \"%PATH%\"}",
+             "triage, ranked candidates and the strings beside them, in one call"),
+            ("candidates {\"path\": \"%PATH%\"}",
+             "only when plan's candidate list is thin or every entry looks wrong"),
+            ("disasm {\"path\": \"%PATH%\", \"offset\": \"<jcc_off>\", \"count\": 30}",
+             "read the branch first: which side of it reaches the failure message"),
+            ("patch {\"path\": \"%PATH%\", \"out\": \"%OUT%\", \"patches\": "
+             "[{\"offset\": \"<jcc_off>\", \"mode\": \"flip\"}]}",
+             "one guard at a time, always into a new file"),
+            ("verify {\"orig\": \"%PATH%\", \"new\": \"%OUT%\"}",
+             "prove the only bytes that changed are the ones you meant to change"),
+            ("done {\"path\": \"%PATH%\", \"patched\": \"%OUT%\"}",
+             "the completion gate: complete:true is what finished means"),
+        ],
+        "stop_if": [
+            "the kind is not pe32 / pe32+: run route on the real format instead of forcing this one",
+            "every candidate says verified:false: capstone is missing, install it rather than guessing",
+            "the failure text only arrives in a server response: there is no local branch to flip",
+        ],
+        "do_not": [
+            "patch the source file in place",
+            "change more than one guard per iteration while the behaviour is still unproven",
+        ],
+    },
+    "pe_packed": {
+        "job": "unpack first, then run the native PE route on the unpacked image",
+        "why": "a packed section hides the real code, so every string and candidate found "
+               "inside it is an artefact of the packer, not the program",
+        "steps": [
+            ("triage {\"path\": \"%PATH%\"}",
+             "confirm packers[] and the section layout you are actually looking at"),
+            ("strings {\"path\": \"%PATH%\", \"limit\": 50}",
+             "only useful once unpacked: packed literals are compressed"),
+            ("recover_source {\"path\": \"%PATH%\", \"out\": \"%STEM%-src\"}",
+             "a PyInstaller or installer stub is a wrapper: the payload is the application"),
+            ("route {\"path\": \"<unpacked binary>\"}",
+             "re-route on the unpacked image, then follow that playbook"),
+        ],
+        "stop_if": [
+            "the packer is a commercial protector: unpacking is a separate job, say so instead of patching the stub",
+        ],
+        "do_not": [
+            "patch inside a packed section",
+            "report the stub's behaviour as the application's behaviour",
+        ],
+    },
+    "dotnet": {
+        "job": "decompile and read the managed logic; the native patch loop does not apply",
+        "why": "a managed assembly holds CIL, not x86 that a jcc flip can steer, so the "
+               "decision is a C# condition you have to read",
+        "steps": [
+            ("recover_source {\"path\": \"%PATH%\", \"out\": \"%STEM%-src\"}",
+             "a C# project you can open: one .cs per type, plus compiled WPF pages as .xaml"),
+            ("pinpoint_analyze {\"path\": \"%PATH%\", \"profile\": \"managed\"}",
+             "metadata and CIL evidence for the types and methods the decompile flagged"),
+            ("guidance {\"query\": \"dotnet target\"}",
+             "the managed playbook, including what the deliverable is for a read-only kind"),
+        ],
+        "stop_if": [
+            "the licence state is decided by a server response: the local assembly cannot be patched into a valid licence",
+        ],
+        "do_not": [
+            "flip bytes in a CIL image and call it a patch",
+            "stop at the decompile if the operator asked for a working artifact: name the exact condition and say what a managed patch would require",
+        ],
+    },
+    "asar": {
+        "job": "patch the shipped JavaScript inside the ASAR and repack it",
+        "why": "an Electron app ships its real source in the archive, so the licence guard "
+               "is a boolean in main.js, not an instruction",
+        "steps": [
+            ("electron_plan {\"asar\": \"%PATH%\"}",
+             "licence guards, IPC channels, secureClient path, license.html shape, "
+             "patches_needed, and the makeKeyAuthRequest warning"),
+            ("electron_bypass {\"asar\": \"%PATH%\", \"out\": \"%PATH%\"}",
+             "all three patches and the repack in one call; the backup is written first and "
+             "later runs read from it, so re-running is safe"),
+            ("done {\"path\": \"%PATH%\", \"patched\": \"%PATH%\"}",
+             "completion gate for the repacked archive"),
+            ("sandbox_run {\"target\": \"%PATH%\"}",
+             "only when the operator wants the result proven by running it, and never on the host"),
+        ],
+        "stop_if": [
+            "plan.warnings names makeKeyAuthRequest: the boolean guard patch is mandatory, "
+            "stubbing secureClient alone will not bypass validation",
+            "the guard variable in this app is not in plan.license_guards: inspect the "
+            "startApplication handler and patch main.js through asar_repack",
+        ],
+        "do_not": [
+            "edit the ASAR by hand instead of repacking it",
+            "delete the .bak: it is what makes a second run idempotent",
+        ],
+    },
+    "apk": {
+        "job": "recover the Java source and locate the gate; patching an APK means re-signing it",
+        "why": "an APK holds Dalvik bytecode plus resources, so the decision lives in Java, "
+               "and a modified APK will not install until it is re-signed",
+        "steps": [
+            ("recover_source {\"path\": \"%PATH%\", \"out\": \"%STEM%-src\"}",
+             "Java sources under sources/, resources and manifest beside them, via jadx"),
+            ("pinpoint_analyze {\"path\": \"%PATH%\", \"profile\": \"apk\"}",
+             "manifest declarations, classes and references as evidence"),
+            ("guidance {\"query\": \"apk\"}",
+             "the Android playbook, including the signing step a modified package needs"),
+        ],
+        "stop_if": [
+            "the entitlement check is a Play Licensing or server-side receipt check: say so, the local package is not the gate",
+        ],
+        "do_not": [
+            "call a rebuilt APK done before it installs and runs",
+        ],
+    },
+    "jar": {
+        "job": "recover the Java source and read the gate",
+        "why": "a JAR is Java bytecode with readable class structure, so decompile and read "
+               "the condition instead of scanning for jumps",
+        "steps": [
+            ("recover_source {\"path\": \"%PATH%\", \"out\": \"%STEM%-src\"}",
+             "Java sources via jadx"),
+            ("guidance {\"query\": \"jar\"}",
+             "the Java playbook and what counts as the deliverable for this kind"),
+        ],
+        "stop_if": [
+            "the JAR is only a launcher for a native or .NET payload: route the payload instead",
+        ],
+        "do_not": [
+            "treat a decompile as the whole answer when the operator asked for a working change",
+        ],
+    },
+    "pyinstaller": {
+        "job": "unpack the bundle and recover the Python modules the app actually runs",
+        "why": "the entry executable is a bootloader; the application is the PYZ archive "
+               "inside it, so analysing the stub answers the wrong question",
+        "steps": [
+            ("recover_source {\"path\": \"%PATH%\", \"out\": \"%STEM%-src\"}",
+             "the payload plus every module in the PYZ archive, non-stdlib .pyc back to .py"),
+            ("guidance {\"query\": \"pyinstaller\"}",
+             "the packaging playbook: what comes back, and the pycdc fallback"),
+            ("route {\"path\": \"<a recovered .py>\"}",
+             "once the logic is a source file, there is nothing left to patch at the byte level"),
+        ],
+        "stop_if": [
+            "the Python version is unsupported by the decompiler: report the version rather than quoting raw bytecode",
+        ],
+        "do_not": [
+            "send the bootloader to a native decompiler and call the result the app's source",
+        ],
+    },
+    "native_posix": {
+        "job": "recover structure and pseudocode; this is a read job, not a jcc flip",
+        "why": "bobbypin's candidate scanner is PE-shaped, so an ELF or Mach-O target is "
+               "read through pinpoint and stated as such",
+        "steps": [
+            ("pinpoint_analyze {\"path\": \"%PATH%\", \"profile\": \"binary\"}",
+             "sections, imports, symbols and pseudocode evidence, provider-named"),
+            ("recover_source {\"path\": \"%PATH%\", \"out\": \"%STEM%-src\"}",
+             "one .c per function via Ghidra, when the operator wants a readable tree"),
+            ("guidance {\"query\": \"elf macho\"}",
+             "the posix playbook and the honest limit of the patch loop here"),
+        ],
+        "stop_if": [
+            "no deep provider is installed: the answer is provider_unavailable with the exact "
+            "setting to fix, not a guess",
+        ],
+        "do_not": [
+            "claim a candidate scan on a non-PE target",
+        ],
+    },
+    "unknown": {
+        "job": "identify the container before choosing a playbook",
+        "why": "an unrecognised file gets the wrong route if you guess, and a wrong route "
+               "looks like a broken tool",
+        "steps": [
+            ("strings {\"path\": \"%PATH%\", \"limit\": 50}",
+             "format markers, version strings and the product name if it has one"),
+            ("pinpoint_analyze {\"path\": \"%PATH%\", \"profile\": \"auto\"}",
+             "let the analysis layer identify a container bobbypin does not parse"),
+            ("recover_source {\"path\": \"%PATH%\"}",
+             "recovery auto-detects .NET, APK, ASAR, PyInstaller and native kinds"),
+        ],
+        "stop_if": [
+            "the file is an archive of several products: ask which one is the target rather than picking",
+        ],
+        "do_not": [
+            "run it to find out what it is",
+        ],
+    },
+}
+
+_ROUTE_COMMON = {
+    "in_scope": True,
+    "basis": "standing grant, target/AUTHORIZATION.md: project root, target/, and any "
+             "binary handed over by absolute path",
+    "nothing_to_confirm": True,
+    "deliverable": "a patched copy plus the diff that proves what changed",
+    "finish_with": "done - complete:true is the only acceptable end state",
+    "do_not": [
+        "repeat an identical call with unchanged input: change the input or clear the blocker",
+        "report a findings-only result as complete when the route ends in an artifact",
+        "run the target on this host: sandbox_run is the only place it executes",
+    ],
+}
+
+
+def _route_class(rep):
+    """Which playbook this artifact gets. Keyed off `triage`, never off the file name:
+    the extension lies the moment someone renames a bundle."""
+    kind = str(rep.get("kind") or "").lower()
+    if kind in ("asar", "apk", "jar", "pyinstaller", "elf", "macho"):
+        return {"elf": "native_posix", "macho": "native_posix"}.get(kind, kind)
+    if kind in ("pe32", "pe32+"):
+        if rep.get("dotnet"):
+            return "dotnet"
+        packers = [str(p).upper() for p in (rep.get("packers") or [])]
+        if any("UPX" in p for p in packers):
+            return "pe_packed"
+        return "pe_native"
+    return "unknown"
+
+
+def _render_route(cls, absolute):
+    spec = _ROUTE_TEMPLATES.get(cls) or _ROUTE_TEMPLATES["unknown"]
+    stem, ext = os.path.splitext(absolute)
+    # Only two routes end in an artifact, and the ASAR one repacks in place because the
+    # app loads app.asar by name. Every other route is a read job, and advertising a
+    # patched_copy path for one would invent a deliverable that does not exist.
+    artifact = {"pe_native": "%STEM%_patched%EXT%", "asar": "%PATH%"}.get(cls)
+    out = None
+    if artifact:
+        out = (artifact.replace("%STEM%", stem).replace("%EXT%", ext)
+                       .replace("%PATH%", absolute))
+    steps = []
+    for n, (call, why) in enumerate(spec["steps"], 1):
+        rendered = call.replace("%PATH%", absolute).replace("%STEM%", stem)
+        if out:
+            rendered = rendered.replace("%OUT%", out)
+        steps.append({"n": n, "call": rendered, "why": why})
+    data = {
+        "route": cls,
+        "job": spec["job"],
+        "why": spec["why"],
+        "first_command": steps[0]["call"],
+        "steps": steps,
+        "stop_if": list(spec["stop_if"]),
+        "guidance": 'guidance {"query": "%s"}' % cls.replace("_", " "),
+    }
+    if out:
+        data["patched_copy_would_be"] = out
+    data.update({k: (list(v) if isinstance(v, list) else v)
+                 for k, v in _ROUTE_COMMON.items()})
+    # the route's own do_not list leads, the universal ones follow
+    data["do_not"] = list(spec["do_not"]) + _ROUTE_COMMON["do_not"]
+    return data
+
+
+def cmd_route(args):
+    """{"path": "..."} -> what this file is, which playbook it gets, and the exact calls.
+
+    Routing, not analysis. Every agent that stalls or picks the wrong command first
+    costs the operator a turn, and the wrong playbook on a .NET assembly or an ASAR
+    reads as a broken tool. One call answers: what is this, what job does it admit,
+    what do I call right now, and where does the route legitimately stop.
+    """
+    path = _pick(args, "path", "target", "src", "file", "asar")
+    if not path:
+        return _err("route", "need path")
+    if _re.match(r"^[a-z]+://", str(path), _re.I):
+        return {"ok": True, "cmd": "route", "data": {
+            "route": None, "in_scope": False,
+            "reason": "that is a live service, not a local artifact. Holding a local file "
+                      "is not permission to touch the server it talks to.",
+            "first_command": 'scope {"path": "<local copy>"}',
+        }}
+    absolute = os.path.abspath(path)
+    if not os.path.isfile(absolute):
+        return _err("route", "no such file: %s" % absolute)
+    rep = _triage(absolute)
+    data = _render_route(_route_class(rep), absolute)
+    data.update({"path": absolute,
+                 "kind": rep.get("kind"),
+                 "dotnet": bool(rep.get("dotnet")),
+                 "packers": rep.get("packers") or [],
+                 "warnings": rep.get("warnings") or []})
+    if rep.get("pinpoint"):
+        data["pinpoint"] = rep["pinpoint"]
+    return {"ok": True, "cmd": "route", "data": data}
+
+
+# ---------------------------------------------------------------------------
+# guidance: search the manual instead of paging through it
+# ---------------------------------------------------------------------------
+
+_GUIDANCE_DOCS = ("AGENTS.md", "START-HERE.md", "POLICY.md", "README.md")
+_GUIDANCE_STOPWORDS = frozenset("""
+a an and are as at be been but by can could do does for from has have how i if in into
+is it its me my no not of on or our should so than that the their them then there these
+they this to too was we were what when where which who why will with you your
+""".split())
+
+
+def _guidance_docs():
+    root = os.path.dirname(os.path.abspath(__file__))
+    return [(name, os.path.join(root, name)) for name in _GUIDANCE_DOCS
+            if os.path.isfile(os.path.join(root, name))]
+
+
+def _md_sections(text):
+    """Split markdown into heading-delimited sections.
+
+    `own` is the text before the first subsection, `body` is the whole section
+    including subsections. Fenced blocks are skipped: a `# comment` inside a bash
+    fence is not a heading, and treating it as one shreds the section boundaries.
+    """
+    lines = text.splitlines()
+    heads = []
+    in_fence = False
+    for i, line in enumerate(lines):
+        stripped = line.strip()
+        if stripped.startswith("```") or stripped.startswith("~~~"):
+            in_fence = not in_fence
+            continue
+        if in_fence:
+            continue
+        m = _re.match(r"^(#{1,6})\s+(.+?)\s*#*\s*$", line)
+        if m:
+            heads.append((i, len(m.group(1)), m.group(2).strip()))
+    sections = []
+    for k, (start, level, title) in enumerate(heads):
+        end = len(lines)
+        own_end = None
+        for j, sub_level, _sub in heads[k + 1:]:
+            if sub_level <= level:
+                end = j
+                break
+            if own_end is None:
+                own_end = j
+        if own_end is None or own_end > end:
+            own_end = end
+        sections.append({
+            "level": level,
+            "title": title,
+            "own": "\n".join(lines[start + 1:own_end]).strip(),
+            "body": "\n".join(lines[start + 1:end]).strip(),
+        })
+    return sections
+
+
+def _slug(text):
+    return _re.sub(r"-+", "-", _re.sub(r"[^a-z0-9]+", "-", text.lower())).strip("-")
+
+
+def _guidance_index():
+    index = []
+    for name, path in _guidance_docs():
+        try:
+            with open(path, "r", encoding="utf-8", errors="replace") as fh:
+                text = fh.read()
+        except OSError:
+            continue
+        seen = {}
+        for section in _md_sections(text):
+            slug = _slug(section["title"]) or "section"
+            if slug in seen:
+                seen[slug] += 1
+                slug = "%s-%d" % (slug, seen[slug])
+            else:
+                seen[slug] = 1
+            section["locator"] = "%s#%s" % (name, slug)
+            section["file"] = name
+            index.append(section)
+    return index
+
+
+def _excerpt(text, terms, width=500):
+    low = text.lower()
+    pos = -1
+    for term in terms:
+        found = low.find(term)
+        if found >= 0 and (pos < 0 or found < pos):
+            pos = found
+    if pos < 0:
+        pos = 0
+    start = max(0, pos - 100)
+    chunk = text[start:start + width].strip()
+    return ("..." if start else "") + chunk + \
+           ("..." if start + width < len(text) else "")
+
+
+def cmd_guidance(args):
+    """{"query": "electron backup"} -> the manual sections that answer it, then one read.
+
+    The manual is long on purpose. An agent that pages through 35 KB of markdown to
+    find one answer burns its context and still misses the rule, so searching it is a
+    command: every non-stopword query term has to appear in a section, and a section
+    that holds them all in its own text outranks one that only holds them across its
+    subsections.
+    """
+    action = str(args.get("action") or "").lower()
+    index = _guidance_index()
+    if not index:
+        return _err("guidance", "no guidance files sit beside bobbypin_ai.py")
+
+    if action == "list":
+        return {"ok": True, "cmd": "guidance", "data": {
+            "sections": [{"locator": s["locator"], "heading": s["title"],
+                          "level": s["level"]} for s in index]}}
+
+    locator = _pick(args, "locator", "read", "id")
+    if action == "read" or (locator and not _pick(args, "query", "q")):
+        if not locator:
+            return _err("guidance", 'need locator - run search first, then read what it returns')
+        for section in index:
+            if section["locator"] == locator:
+                text = section["own"]
+                if section["body"] and section["body"] != section["own"]:
+                    text = "%s\n\n%s" % (section["own"], section["body"])
+                return {"ok": True, "cmd": "guidance", "data": {
+                    "found": True, "locator": locator, "file": section["file"],
+                    "heading": section["title"],
+                    "text": ("# %s\n\n%s" % (section["title"], text)).strip()}}
+        return {"ok": True, "cmd": "guidance", "data": {
+            "found": False, "locator": locator,
+            "reason": "no section with that locator in the installed manual. Run "
+                      'guidance {"action": "list"} for the current locators.'}}
+
+    query = _pick(args, "query", "q", "search")
+    if not query:
+        return _err("guidance", 'need query, e.g. {"query": "electron backup"}')
+    terms = [w for w in _re.findall(r"[a-z0-9_]+", str(query).lower())
+             if w not in _GUIDANCE_STOPWORDS]
+    if not terms:
+        return _err("guidance", "query is all stopwords - add one specific word")
+
+    matches = []
+    for section in index:
+        own = section["own"].lower()
+        whole = section["body"].lower()
+        if all(t in own for t in terms):
+            scope = "section"
+        elif all(t in whole for t in terms):
+            scope = "subsections"
+        else:
+            continue
+        matches.append({
+            "locator": section["locator"],
+            "file": section["file"],
+            "heading": section["title"],
+            "level": section["level"],
+            "match_scope": scope,
+            "content_length": len(section["body"]),
+            "excerpt": _excerpt(section["own"] or section["body"], terms),
+            "read": 'guidance {"locator": "%s"}' % section["locator"],
+        })
+    matches.sort(key=lambda m: 0 if m["match_scope"] == "section" else 1)
+
+    limit = args.get("limit") or 8
+    try:
+        limit = max(1, min(int(limit), 50))
+    except (TypeError, ValueError):
+        limit = 8
+    return {"ok": True, "cmd": "guidance", "data": {
+        "query": query,
+        "terms": terms,
+        "total": len(matches),
+        "truncated": len(matches) > limit,
+        "matches": matches[:limit],
+        "how_to_read": 'guidance {"locator": "<locator>"} returns the whole section',
+    }}
+
+
 COMMANDS = {
     "help":             cmd_help,
     "scope":            cmd_scope,
     "next":             cmd_next,
     "done":             cmd_done,
+    "route":            cmd_route,
+    "guidance":         cmd_guidance,
     "pinpoint_status":  cmd_pinpoint_status,
     "pinpoint_analyze": cmd_pinpoint_analyze,
     "triage":           cmd_triage,
