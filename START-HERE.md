@@ -2,8 +2,10 @@
 
 bobbypin is a reverse-engineering suite: it finds the branch that decides
 "licensed / not licensed", "password correct / wrong", "debugger detected /
-not", and patches a copy of the binary so you can prove the outcome. Everything
-runs against software you own or are authorised to test.
+not", and patches a copy of the binary so you can prove the outcome. **The
+patched copy plus its diff is the deliverable** — an agent that stops at a
+findings report has not finished the job. Everything runs against software you own
+or are authorised to test.
 
 Three surfaces over one engine — a browser GUI, a CLI, and an AI layer. Deep
 analysis (Ghidra, jadx, apktool) is the packaged `pinpoint` component, installed
