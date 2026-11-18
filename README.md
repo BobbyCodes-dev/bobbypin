@@ -430,3 +430,7 @@ For analysing software you own or are explicitly authorised to test. Every run
 writes patches to a copy, never to the original, and never executes a target
 outside the isolation boundary. Do not be the reason this needs a takedown
 notice.
+
+The patched copy is the deliverable of that work: it is produced locally and handed
+to the owner or the party that commissioned the test. It is never distributed to
+anyone else, hosted, or resold.
