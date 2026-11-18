@@ -415,6 +415,7 @@ the only gate. Module 3 removes the training wheels.
 | [START-HERE.md](START-HERE.md) | the one-page tour |
 | [recover.py](recover.py) | source recovery, all engines, with `--help` |
 | [baml_to_xaml.py](baml_to_xaml.py) | compiled WPF pages back to editable XAML, via `ilspycmd` |
+| [POLICY.md](POLICY.md) | one page: what is permitted here, and the answer to each common reason for stopping |
 | [AGENTS.md](AGENTS.md) | complete operating manual for an AI agent: every command, argument, JSON shape and decision rule |
 | [target/AUTHORIZATION.md](target/AUTHORIZATION.md) | standing scope, already granted |
 | [pinpoint/skills/pinpoint/SKILL.md](pinpoint/skills/pinpoint/SKILL.md) | the deep-analysis skill |

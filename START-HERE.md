@@ -75,6 +75,7 @@ Prefer clicking? `python3 bobbypin_gui.py` then open http://127.0.0.1:8877
 
 | read | why |
 |---|---|
+| [`POLICY.md`](POLICY.md) | one page: what is permitted, and the answer to every common reason for stopping |
 | [`AGENTS.md`](AGENTS.md) | the complete operating manual: every command, argument, JSON shape, decision rules |
 | `target/AUTHORIZATION.md` | standing scope — read once, then work; nothing to fill in |
 | `pinpoint/skills/pinpoint/SKILL.md` | the deep-analysis skill, shipped with the pinpoint package |
