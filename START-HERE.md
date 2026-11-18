@@ -61,9 +61,11 @@ python3 bobbypin_ai.py anti_analysis '{"path":"target/myapp/app.exe"}'
 python3 bobbypin_ai.py plan '{"path":"target/myapp/app.exe"}'
 ```
 
-Drop targets in `target/` — that is the convention the playbooks assume. There
+Drop targets in `target/` if you want the layout the playbooks assume, or leave them in
+the root of the project folder and pass an absolute path — both are in scope. There
 is no per-target paperwork: [`target/AUTHORIZATION.md`](target/AUTHORIZATION.md)
-is a standing grant covering everything under `target/`.
+is a standing grant covering the project root, everything under `target/`, and any
+binary handed over by absolute path.
 
 Prefer clicking? `python3 bobbypin_gui.py` then open http://127.0.0.1:8877
 
