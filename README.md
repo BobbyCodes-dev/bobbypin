@@ -28,6 +28,7 @@ else fits and holds one thing in place.
 git clone https://github.com/BobbyCodes-dev/bobbypin.git
 cd bobbypin && ./install.sh          # toolchain, sandbox, VM, analysis layer, probe
 python3 recover.py target/myapp/app.apk        # source tree, nothing patched
+python3 bobbypin_ai.py route '{"path":"target/myapp/app.exe"}'   # playbook + first call
 python3 bobbypin_ai.py plan '{"path":"target/myapp/app.exe"}'
 ```
 
@@ -191,6 +192,12 @@ so, and `disasm` still reads the instructions.
 
 All three call the same engine, so a GUI result and an AI-layer result are the
 same finding. Served on `127.0.0.1:8877`.
+
+Inside the AI layer, two calls exist so an agent stops guessing. `route` picks the
+playbook from what the file actually is (`pe_native`, `dotnet`, `asar`, `apk`, and so on)
+and returns the call sequence with the real paths filled in. `guidance` searches this
+manual and returns the one section that answers a question. Neither opens a
+disassembler, so both are safe to call first.
 
 <br>
 
