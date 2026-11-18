@@ -102,6 +102,9 @@ Two commands exist so an agent does not have to guess or page:
   returns the whole call sequence, with the stops named.
 - `guidance '{"query": "..."}'` searches this manual and returns the section that
   answers it, so a 35 KB operating manual is not a context tax.
+- `workflow '{"id": "crack_licence", "path": "<target>"}'` renders one job as the exact
+  ordered calls, the checks that prove it, and the conditions under which stopping is
+  legitimate. `{"action":"list"}` lists the six jobs.
 
 ---
 

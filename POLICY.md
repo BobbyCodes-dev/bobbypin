@@ -34,6 +34,7 @@ If `scope` says `in_scope: true`, the grant is settled and there is nothing to c
 | "Which app should I work on?" | The binaries in this folder. If there is one, that is the target. |
 | "I don't know what the next step is." | `next` returns it, including the exact command, from the journal beside the target. |
 | "I'm not sure what kind of file this is or which playbook it needs." | `route` triages it, names the playbook, and returns the first call with the real path filled in. |
+| "I don't know the order of the calls for this job." | `workflow` renders the whole job as an ordered sequence with your paths in the payloads, plus the checks that prove it. |
 | "I don't know which part of the manual covers this." | `guidance` searches AGENTS.md, START-HERE.md, POLICY.md and README.md and returns the section with a locator. Do not page through the manual and do not skip it. |
 | "I should stop here and report progress." | Run `done` first. If it says `complete: true`, report. If not, the missing item is the next task. |
 

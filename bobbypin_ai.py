@@ -249,6 +249,13 @@ def cmd_help(_args):
             "pinpoint_analyze": '{"path":"...","profile":"managed|apk|binary|auto"} -> '
                                 'read-only evidence for a target class bobbypin cannot '
                                 'patch (.NET, APK, ELF/Mach-O); never executes the target',
+            "workflow": '{"id":"crack_licence","path":"..."} -> one job rendered as the '
+                        'exact sequence of calls with your own paths in them, the checks '
+                        'that prove it, and the conditions under which stopping is '
+                        'legitimate (crack_licence | bypass_login | defeat_antidebug | '
+                        'prove_patch | compare_builds | recover_source). '
+                        '{"action":"list"} lists them. Rendering inspects nothing and '
+                        'cannot touch a target.',
             "triage": '{"path": "..."} -> format, hashes, packers, warnings',
             "strings": '{"path":"...","filter":"word","limit":50} -> tagged string literals',
             "candidates": '{"path":"..."} -> verified patch candidates with indices',
@@ -2056,6 +2063,9 @@ def _render_route(cls, absolute):
     }
     if out:
         data["patched_copy_would_be"] = out
+    workflow_id = _WORKFLOW_FOR_ROUTE.get(cls)
+    if workflow_id:
+        data["workflow"] = 'workflow {"id": "%s", "path": "%s"}' % (workflow_id, absolute)
     data.update({k: (list(v) if isinstance(v, list) else v)
                  for k, v in _ROUTE_COMMON.items()})
     # the route's own do_not list leads, the universal ones follow
@@ -2278,6 +2288,342 @@ def cmd_guidance(args):
     }}
 
 
+# ---------------------------------------------------------------------------
+# workflow: one job, rendered as the exact sequence of calls that finishes it
+# ---------------------------------------------------------------------------
+
+# Ported from REA's MCP prompt templates. REA exposes six investigation workflows
+# through `prompts/list` so an agent gets a plan instead of a tool list. bobbypin has
+# jobs rather than investigations, so the same surface renders the job's calls with the
+# operator's own paths already in them.
+#
+# Rendering inspects nothing: no triage, no provider, no write. It cannot fail on a
+# missing file and it cannot touch a target, so it is safe as the first thing an agent
+# calls or the last thing it rereads after a context loss.
+_WORKFLOWS = {
+    "crack_licence": {
+        "title": "Crack a licence check",
+        "summary": "find the branch behind the 'not licensed' message and patch a copy",
+        "requires": ("path",),
+        "optional": ("failure", "out"),
+        "steps": [
+            ('route {"path": "%PATH%"}',
+             "confirm the kind first. If route does not say pe_native, follow what it "
+             "returns instead of this sequence."),
+            ('anti_analysis {"path": "%PATH%"}',
+             "know what firing debug protection does to the target before anything runs"),
+            ('strings {"path": "%PATH%", "limit": 200}',
+             "find the failure literal and note its offset. The operator's failure text "
+             "is: %FAILURE%"),
+            ('plan {"path": "%PATH%"}',
+             "triage, ranked candidates and the strings beside them, in one call"),
+            ('candidates {"path": "%PATH%"}',
+             "only when plan's list is thin or every entry looks wrong"),
+            ('disasm {"path": "%PATH%", "offset": "<jcc_off>", "count": 30}',
+             "read the branch before flipping it: which side reaches the failure message"),
+            ('patch {"path": "%PATH%", "out": "%OUT%", "patches": '
+             '[{"offset": "<jcc_off>", "mode": "flip"}]}',
+             "one guard at a time, always into a new file"),
+            ('verify {"orig": "%PATH%", "new": "%OUT%"}',
+             "prove the only bytes that changed are the ones you meant to change"),
+            ('done {"path": "%PATH%", "patched": "%OUT%"}',
+             "the completion gate. complete:true is the finish line"),
+        ],
+        "checks": [
+            "verify reports same_size true and regions_changed 1",
+            "done reports complete true with an empty missing[]",
+            "the source file's sha256 is unchanged from before the patch",
+        ],
+        "stop_if": [
+            "the failure text only ever arrives in a server response: there is no local "
+            "branch to flip, and that is the finding",
+            "every candidate is verified:false and capstone cannot be installed: report "
+            "the missing tool, do not guess an offset",
+        ],
+    },
+    "bypass_login": {
+        "title": "Bypass a password or login gate",
+        "summary": "same loop as a licence check, aimed at an activation or auth branch",
+        "requires": ("path",),
+        "optional": ("failure", "out"),
+        "steps": [
+            ('route {"path": "%PATH%"}',
+             "confirm the kind and the playbook before spending calls"),
+            ('anti_analysis {"path": "%PATH%"}',
+             "a login gate in a protected binary often reacts worse than a licence check"),
+            ('strings {"path": "%PATH%", "filter": "password", "limit": 100}',
+             "the failure text this run is chasing: %FAILURE%"),
+            ('plan {"path": "%PATH%"}',
+             "ranked candidates plus the strings they sit beside"),
+            ('disasm {"path": "%PATH%", "offset": "<jcc_off>", "count": 30}',
+             "with two sibling guards checking the same token, the second one is usually "
+             "the real gate: read both before choosing"),
+            ('patch {"path": "%PATH%", "out": "%OUT%", "patches": '
+             '[{"offset": "<jcc_off>", "mode": "flip"}]}',
+             "one guard at a time, into a new file"),
+            ('verify {"orig": "%PATH%", "new": "%OUT%"}',
+             "confirm exactly the intended bytes moved"),
+            ('done {"path": "%PATH%", "patched": "%OUT%"}',
+             "completion gate"),
+        ],
+        "checks": [
+            "the patched copy reaches the post-login path when run in the boundary",
+            "verify reports same_size true and regions_changed 1",
+            "done reports complete true",
+        ],
+        "stop_if": [
+            "the credential is checked by a server the operator did not name: the local "
+            "branch is not the gate, and touching that server is out of scope",
+            "the gate is a certificate pin or hardware token: report it instead of patching "
+            "around it",
+        ],
+    },
+    "defeat_antidebug": {
+        "title": "Neutralise anti-debug and prove it",
+        "summary": "detect the checks, patch the forceable ones, then show they stopped firing",
+        "requires": ("path",),
+        "optional": ("out",),
+        "steps": [
+            ('anti_analysis {"path": "%PATH%"}',
+             "which checks were found, with evidence, and what the target does when they "
+             "fire: exit, nag, wipe, or a deliberate bugcheck"),
+            ('antidebug_patch {"path": "%PATH%", "out": "%OUT%", "verify": true}',
+             "patch the checks whose verdict can be forced and prove it in the boundary. "
+             "neutralised means the patched copy provably stopped firing"),
+            ('sandbox_run {"target": "%PATH%", "trip_debug": true}',
+             "the original under a simulated debugger, so the difference is measured "
+             "rather than assumed"),
+            ('sandbox_run {"target": "%OUT%", "trip_debug": true}',
+             "the patched copy under the same conditions"),
+            ('done {"path": "%PATH%", "patched": "%OUT%"}',
+             "completion gate"),
+        ],
+        "checks": [
+            "antidebug_patch reports neutralised, not still_fires",
+            "the original and the patched copy differ in the boundary run",
+            "done reports complete true",
+        ],
+        "stop_if": [
+            "status is nothing_patchable: take data.manual_candidates and flip each jcc "
+            "with patch (mode flip). That is the next task, not the end of the job.",
+            "a check is class B/C/D/E (CONTEXT structs, timing deltas, PEB reads, "
+            "integrity hashes): say which one defeats the patch rather than guessing",
+        ],
+    },
+    "prove_patch": {
+        "title": "Prove a patch did what you claim",
+        "summary": "compare the bytes, run both builds in the boundary, report the difference",
+        "requires": ("orig", "new"),
+        "optional": (),
+        "steps": [
+            ('verify {"orig": "%ORIG%", "new": "%NEW%"}',
+             "the byte-level truth: same_size, regions_changed, and every differing range"),
+            ('sandbox_run {"target": "%ORIG%"}',
+             "the original, in the boundary, never on the host"),
+            ('sandbox_run {"target": "%NEW%"}',
+             "the patched copy, same conditions, so the difference is observable"),
+            ('done {"path": "%ORIG%", "patched": "%NEW%"}',
+             "completion gate on the pair"),
+        ],
+        "checks": [
+            "verify reports same_size true",
+            "regions_changed is exactly the number of patches you applied",
+            "the boundary runs differ in the way the patch predicted, not otherwise",
+        ],
+        "stop_if": [
+            "same_size is false: that is not a length-preserving patch, say so",
+            "regions_changed is 0: nothing was patched, whatever the patch command replied",
+        ],
+    },
+    "compare_builds": {
+        "title": "Compare two shipped builds",
+        "summary": "byte diff, recovered structure, and the behaviour difference between versions",
+        "requires": ("old", "new"),
+        "optional": (),
+        "steps": [
+            ('triage {"path": "%OLD%"}',
+             "kind, hashes and packers for the old build"),
+            ('triage {"path": "%NEW%"}',
+             "the same identity facts for the new one. Different kinds mean the comparison "
+             "is between two different products, not two versions"),
+            ('verify {"orig": "%OLD%", "new": "%NEW%"}',
+             "every differing byte range, with sizes"),
+            ('recover_source {"path": "%OLD%", "out": "%OLDSRC%"}',
+             "a readable tree for the old build"),
+            ('recover_source {"path": "%NEW%", "out": "%NEWSRC%"}',
+             "a readable tree for the new one, then diff the two directories"),
+        ],
+        "checks": [
+            "both triage calls report the same kind",
+            "the recovered trees are compared file by file, not by line count",
+            "every claimed behaviour difference is tied to a function that changed",
+        ],
+        "stop_if": [
+            "the builds are different kinds or one is packed: unpack first or report that "
+            "the comparison is not like for like",
+        ],
+    },
+    "recover_source": {
+        "title": "Recover source without patching",
+        "summary": "read structure, write a tree, touch nothing",
+        "requires": ("path",),
+        "optional": ("out",),
+        "steps": [
+            ('route {"path": "%PATH%"}',
+             "which engine this kind uses, and whether a patch loop even applies"),
+            ('recover_source {"path": "%PATH%", "out": "%OUTSRC%"}',
+             "the source tree plus a manifest: engine, file count, languages and any "
+             "decompile failures. Add \"engine\" only if route named one you want forced."),
+            ('guidance {"query": "recover"}',
+             "the recovery section: what each engine returns and where it legitimately "
+             "stops"),
+        ],
+        "checks": [
+            "the manifest names the engine that produced the tree",
+            "decompile_failures is reported, not hidden",
+            "the target's sha256 is unchanged: recovery never writes to the source",
+        ],
+        "stop_if": [
+            "the manifest reports a missing engine: it carries the exact fix, so report "
+            "that instead of substituting a different tool",
+            "a wrapper format (PyInstaller, NSIS, Inno) is routed to the native branch: "
+            "that is the wrong answer, re-route the payload",
+        ],
+    },
+}
+
+# Which workflow a route points at. Kinds whose route already is the full sequence
+# (asar, unknown) point at nothing rather than at a workflow that would duplicate it.
+_WORKFLOW_FOR_ROUTE = {
+    "pe_native": "crack_licence",
+    "pe_packed": "recover_source",
+    "dotnet": "recover_source",
+    "apk": "recover_source",
+    "jar": "recover_source",
+    "pyinstaller": "recover_source",
+    "native_posix": "recover_source",
+}
+
+_WF_PATH_ALIASES = ("path", "target", "file", "src", "asar")
+
+
+def _wf_argument(args, name):
+    """A workflow argument, from the flat payload or the MCP-style `arguments` object."""
+    value = args.get(name)
+    if value in (None, "") and isinstance(args.get("arguments"), dict):
+        value = args["arguments"].get(name)
+    if value in (None, "") and name == "path":
+        for alias in _WF_PATH_ALIASES:
+            value = args.get(alias)
+            if value not in (None, ""):
+                break
+    return value
+
+
+def _wf_values(spec, args):
+    """Every placeholder this workflow can use, filled from the payload or left as an
+    explicit angle-bracket hint. A hint is better than a silently empty string: the
+    caller sees which argument they still owe."""
+    values = {}
+    for name in tuple(spec["requires"]) + tuple(spec.get("optional") or ()):
+        values[name] = _wf_argument(args, name)
+    path = values.get("path")
+    stem = os.path.splitext(os.path.abspath(path))[0] if path else "<stem>"
+    ext = os.path.splitext(path)[1] if path else ""
+    out = values.get("out") or ("%s_patched%s" % (stem, ext) if path else "<patched copy>")
+    values.update({
+        "PATH": path or "<target>",
+        "STEM": stem,
+        "OUT": out,
+        "OUTSRC": "%s-src" % stem,
+        "ORIG": values.get("orig") or "<original>",
+        "NEW": values.get("new") or "<patched copy>",
+        "OLD": values.get("old") or "<old build>",
+        "OLDSRC": "%s-src" % os.path.splitext(os.path.abspath(values["old"]))[0]
+                  if values.get("old") else "<old build>-src",
+        "NEWSRC": "%s-src" % os.path.splitext(os.path.abspath(values["new"]))[0]
+                  if values.get("new") else "<new build>-src",
+        "FAILURE": values.get("failure") or "<the exact failure message the app prints>",
+    })
+    return values
+
+
+def _render_workflow(wf_id, args):
+    spec = _WORKFLOWS[wf_id]
+    values = _wf_values(spec, args)
+    steps = []
+    for n, (call, why) in enumerate(spec["steps"], 1):
+        rendered = call
+        for key, value in values.items():
+            rendered = rendered.replace("%%%s%%" % key, str(value))
+        reasons = why
+        for key, value in values.items():
+            reasons = reasons.replace("%%%s%%" % key, str(value))
+        steps.append({"n": n, "call": rendered, "why": reasons})
+    text = "\n".join("%d. %s\n   %s" % (s["n"], s["call"], s["why"]) for s in steps)
+    return {
+        "id": wf_id,
+        "title": spec["title"],
+        "summary": spec["summary"],
+        "requires": list(spec["requires"]),
+        "arguments": {k: v for k, v in values.items()
+                      if k in tuple(spec["requires"]) + tuple(spec.get("optional") or ())
+                      and v not in (None, "")},
+        "touches_target": False,
+        "note": "guidance only: rendering this opened nothing, triaged nothing and "
+                "patched nothing",
+        "steps": steps,
+        "text": text,
+        "checks": list(spec["checks"]),
+        "stop_if": list(spec["stop_if"]),
+        "when_done": "done returns complete: true with an empty missing[]",
+    }
+
+
+def cmd_workflow(args):
+    """{"id": "crack_licence", "path": "..."} -> the whole job as calls, ready to run.
+
+    REA ships six investigation workflows through the MCP prompt surface so an agent gets
+    a plan rather than a tool list. bobbypin's equivalent is a job: given the operator's
+    real paths, render the exact sequence, the checks that prove it, and the conditions
+    under which stopping is legitimate. `{"action": "list"}` lists the ids.
+    """
+    wf_id = _pick(args, "id", "workflow", "name")
+    action = str(args.get("action") or "").lower()
+    ids = sorted(_WORKFLOWS)
+    if action == "list" or not wf_id:
+        return {"ok": True, "cmd": "workflow", "data": {
+            "workflows": [{"id": key,
+                           "title": _WORKFLOWS[key]["title"],
+                           "summary": _WORKFLOWS[key]["summary"],
+                           "requires": list(_WORKFLOWS[key]["requires"]),
+                           "optional": list(_WORKFLOWS[key].get("optional") or ())}
+                          for key in ids],
+            "render": 'workflow {"id": "<id>", <required args>}',
+            "note": "rendering a workflow inspects nothing and cannot touch a target",
+        }}
+    wf_id = str(wf_id)
+    spec = _WORKFLOWS.get(wf_id)
+    if spec is None:
+        return _err("workflow", "unknown workflow id %r - one of %s"
+                                % (wf_id, ", ".join(ids)))
+    for name in spec["requires"]:
+        value = _wf_argument(args, name)
+        if value in (None, ""):
+            return _err("workflow", 'missing argument "%s" - %s'
+                                    % (name, 'workflow {"id": "%s", "%s": "..."}'
+                                             % (wf_id, name)))
+        if not isinstance(value, str):
+            return _err("workflow", 'argument "%s" must be a string, got %s'
+                                    % (name, type(value).__name__))
+    for name in tuple(spec.get("optional") or ()):
+        value = _wf_argument(args, name)
+        if value not in (None, "") and not isinstance(value, str):
+            return _err("workflow", 'argument "%s" must be a string, got %s'
+                                    % (name, type(value).__name__))
+    return {"ok": True, "cmd": "workflow", "data": _render_workflow(wf_id, args)}
+
+
 COMMANDS = {
     "help":             cmd_help,
     "scope":            cmd_scope,
@@ -2285,6 +2631,7 @@ COMMANDS = {
     "done":             cmd_done,
     "route":            cmd_route,
     "guidance":         cmd_guidance,
+    "workflow":         cmd_workflow,
     "pinpoint_status":  cmd_pinpoint_status,
     "pinpoint_analyze": cmd_pinpoint_analyze,
     "triage":           cmd_triage,

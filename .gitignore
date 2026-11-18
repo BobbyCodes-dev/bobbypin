@@ -15,3 +15,6 @@ venv/
 !pinpoint/dist/**
 !pinpoint/native/windows/build/
 !pinpoint/native/windows/build/**
+
+# per-target run journals: written beside the target, resume state, never source
+*.bobbypin.json
