@@ -68,8 +68,8 @@ Human GUI (if the user prefers clicking): `python3 bobbypin_gui.py 8877`
 | `disasm` | `path`, `offset` (hex), `count`? | decoded instructions with VAs |
 | `bytes` | `path`, `offset`, `len`? | raw hex at offset |
 | `plan` | `path` | triage + candidates + top strings + suggested next steps |
-| `patch` | `src`, `dst`, `patches[]` | applies nop/flip/byte:HEX, writes dst, per-patch status |
-| `verify` | `orig`, `new` | byte-diff regions |
+| `patch` | `src`, `dst`, `patches[]` (aliases: `path`/`target` for src, `out` for dst) | applies nop/flip/byte:HEX, writes dst, per-patch status |
+| `verify` | `orig`, `new` (aliases: `src`/`path` for orig, `dst`/`out` for new) | byte-diff regions |
 
 ### Electron ASAR commands
 
