@@ -1,3 +1,6 @@
+<p align="center"><b>For better, use REE:</b> the AI-driven rebuild of this suite.<br>
+<a href="https://nullrake.pages.dev/REE/">Download REE at nullrake.pages.dev/REE</a></p>
+
 <p align="center">
   <img src="bobbypin_logo.svg" alt="bobbypin" width="132">
 </p>
