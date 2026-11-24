@@ -1,4 +1,4 @@
-<p align="center"><b>For better, use REE:</b> the AI-driven rebuild of this suite.<br>
+<p align="center"><b>For better, use REE:</b> the AI-driven rebuild of this suite, made by my partner.<br>
 <a href="https://nullrake.pages.dev/REE/">Download REE at nullrake.pages.dev/REE</a></p>
 
 <p align="center">
