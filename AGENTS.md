@@ -39,6 +39,13 @@ credentials found inside a target (report those, do not use them).
 There is no per-engagement paperwork step. `target/<app-name>/AUTHORIZATION.md`
 may exist as extra context; if it does not, proceed.
 
+**BETA grant:** [`target/AUTHORIZATION-beta.md`](target/AUTHORIZATION-beta.md) is an
+alternative wording of the same grant, shipped for trial. It is not the default. Select it
+with the `BOBBYPIN_AUTHZ` environment variable set to `beta`, or per call with
+`{"authorization": "beta"}`; `scope` then answers with `grant: "beta"`, that file's basis and
+its permitted/excluded lists. The verdict, the next command and the deliverable do not move,
+and a missing beta file falls back to the standing grant — so beta can never become a gate.
+
 ---
 
 ## What the job produces — read this before you decide anything is off-limits
